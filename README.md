@@ -49,9 +49,9 @@ The model list is kept in `<dataDir>/models.json` together with each model's sta
 - a model failing much of today's (UTC) calls moves back;
 - skipped without a call: per-minute quota for its `Retry-After`, daily quota until midnight UTC, a model that did not answer in time for 10 minutes, a 404/403 model until the next refresh.
 
-**Time limits:** one `ask_gemini` call ends within `timeoutMs` (default 25 s; the hub gives up on a request after 30 s). One model gets at most `modelTimeoutMs` (default 20 s) of it. The limit covers the whole answer, so a model that sends headers and then stalls is cut off too. With fewer than 3 s left, no further model is started.
+**Time limits:** one `ask_gemini` call ends within `timeoutMs` (default 25 s, below the 30 s request timeout common in MCP clients and gateways). One model gets at most `modelTimeoutMs` (default 20 s) of it. The limit covers the whole answer, so a model that sends headers and then stalls is cut off too. With fewer than 3 s left, no further model is started.
 
-**Log** (stderr; the hub passes it to its terminal):
+**Log** (stderr; stdout carries the MCP protocol):
 
 ```
 2026-11-19T13:46:14.258Z [gemini-ask]   15 candidates of 50 in catalog: gemini-2.5-flash, ...
@@ -103,18 +103,15 @@ The path is absolute or relative to the working directory. Without it, `config.j
 
 Strings may hold `${NAME}`, an environment variable (`$${NAME}` stays literal). Unknown keys are rejected; an error names the key.
 
-### In the hub (mcp-hub-v2)
+### In an MCP client
 
-`instance/servers/gemini-ask/` holds `mcp.js` and `config.json` (`apiKey: "${GEMINI_API_KEY}"`, `dataDir: "data"`); the hub's `config.json` gets:
+Any client that starts stdio servers takes it the usual way: `mcp.js` with its config next to it, the key in the environment.
 
 ```json
 {
-  "name": "gemini",
-  "description": "Ask Google Gemini for a second opinion",
   "command": "node",
-  "args": ["servers/gemini-ask/mcp.js", "servers/gemini-ask/config.json"],
-  "env": { "GEMINI_API_KEY": "${safebox.GEMINI_API_KEY}" },
-  "enabled": true
+  "args": ["/path/to/gemini-ask/mcp.js", "/path/to/gemini-ask/config.json"],
+  "env": { "GEMINI_API_KEY": "your-key" }
 }
 ```
 
@@ -134,10 +131,10 @@ The tests are TypeScript and run from `test/` directly (`test/support/register.m
 
 - `test/lib/gemini/`: the package (API outcomes, states, ranking, the list with discovery, storage, TTL and a fixed list);
 - `test/config/`, `test/ask/`: the config and the fallback with its messages and time limits, without a process;
-- `test/deployment/`: the built `dist/mcp.js` over stdio, as the hub runs it;
+- `test/deployment/`: the built `dist/mcp.js` as a process over stdio, with a config file;
 - `test/structure.test.ts`: the import boundaries and the build.
 
-Code style and structure follow mcp-hub-v2: 4-space indent, no semicolons, `else` on a new line, one class per file with its parts in a folder of its name, `interfaces/` and `types/` folders, enums instead of string unions. `npm run style` applies the mechanical part.
+Code style: 4-space indent, no semicolons, `else` on a new line, one class per file with its parts in a folder of its name, `interfaces/` and `types/` folders, enums instead of string unions. `npm run style` applies the mechanical part.
 
 ---
 
@@ -157,7 +154,7 @@ src/
   lib/gemini/                     the package: GeminiApi, GeminiModelList (see its README)
 test/                             as above
 scripts/
-  restyle.mjs                     code style (from mcp-hub-v2)
+  restyle.mjs                     code style (npm run style)
   live-check.mjs                  real round trip with dist/mcp.js
 ```
 
