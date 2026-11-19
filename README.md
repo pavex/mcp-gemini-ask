@@ -127,7 +127,7 @@ npm install
 npm run build     # tsc --noEmit, then esbuild: dist/mcp.js + dist/config.example.json
 npm test          # build, then node --test over test/**/*.test.ts (no key, no network)
 npm run style     # brings src, test and scripts to the code style (-- --check only lists)
-npm run live      # the built server against the real API; needs GEMINI_API_KEY, uses real quota
+npm run live      # the built server against the real API; GEMINI_API_KEY from .env (git-ignored) or the environment; uses real quota
 ```
 
 The tests are TypeScript and run from `test/` directly (`test/support/register.mjs`). They use `test/support/FakeGemini.ts`, a local stand-in for the Gemini API:

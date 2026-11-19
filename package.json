@@ -14,7 +14,7 @@
     "test": "npm run build && npm run test:run",
     "test:run": "node --import ./test/support/register.mjs --test \"test/**/*.test.ts\"",
     "style": "node scripts/restyle.mjs",
-    "live": "node scripts/live-check.mjs"
+    "live": "node --env-file-if-exists=.env scripts/live-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",

@@ -5,7 +5,7 @@
 // answer is "getting ready", the question is repeated, as an agent would.
 // The server's log goes to this terminal.
 //
-//   GEMINI_API_KEY=... npm run live
+//   npm run live      (GEMINI_API_KEY from .env in the project root, or the environment)
 
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -21,7 +21,7 @@ const LIMIT_MS = 180_000
 
 
 if (!process.env.GEMINI_API_KEY) {
-    console.error('GEMINI_API_KEY is not set - nothing to check.')
+    console.error('GEMINI_API_KEY is not set (.env in the project root or the environment) - nothing to check.')
     process.exit(1)
 }
 
