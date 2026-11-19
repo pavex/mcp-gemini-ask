@@ -1,27 +1,27 @@
 {
-  "name": "mcp-google-gemini",
-  "version": "2.0.0",
-  "description": "MCP server — Gemini API bridge with smart model cache and fallback",
+  "name": "mcp-gemini-ask",
+  "version": "3.0.0",
+  "description": "MCP server - ask Google Gemini, with self-managed model list and fallback",
   "type": "module",
   "main": "dist/mcp.js",
   "bin": {
-    "mcp-google-gemini": "dist/mcp.js"
+    "mcp-gemini-ask": "dist/mcp.js"
   },
   "scripts": {
     "start": "node dist/mcp.js",
-    "dev":   "node src/mcp.js",
-    "build": "esbuild src/mcp.js --bundle --platform=node --format=esm --outfile=dist/mcp.js --external:*.node --minify --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\"",
-    "test":  "node test/unit.js && node test/integration.js src && node test/integration.js dist"
+    "dev": "node src/mcp.js",
+    "build": "esbuild src/mcp.js --bundle --platform=node --format=esm --target=node20 --outfile=dist/mcp.js --minify --legal-comments=none --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\"",
+    "test": "node test/unit.js && node test/integration.js src && node test/integration.js dist",
+    "live": "node test/live.js dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.24.2",
-    "zod-to-json-schema": "^3.25.2"
+    "@modelcontextprotocol/server": "^2.4.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.28.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20"
   }
 }

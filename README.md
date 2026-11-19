@@ -1,289 +1,150 @@
-# Google Gemini — Smart Model Fallback for Claude Desktop
+# mcp-gemini-ask
 
-A lightweight MCP (Model Context Protocol) server that connects **Claude Desktop** to the **Google Gemini API**. Automatically selects the best available Gemini model using a tier-based fallback strategy with intelligent quota tracking — so your AI tools keep working even when individual models hit rate limits.
+An MCP server with one tool, `ask_gemini(prompt)`: it sends the prompt to Google Gemini and returns the answer as text.
 
-Built on `@modelcontextprotocol/sdk` with zero Gemini-specific dependencies (uses Node.js built-in `fetch`).
+The server manages the Gemini models on its own. It finds the usable models, uses the best one available, and moves to the next one when a model is out of quota or fails. Everything it does with the models goes to the log (stderr); the agent only sees the answer, or an error that says whether and when to try again.
 
----
-
-## Features
-
-- **3 MCP tools** — `ask_gemini`, `list_models`, `gemini_status`
-- **Smart model cache** — tracks quota (RPM/RPD), availability, and TTL per model in memory
-- **Quota-aware fallback** — reads `Retry-After` header and quota type (per-minute vs per-day), skips blocked models automatically
-- **Structured prompts** — optional `context[]` blocks (`skill` / `data` / `text`) prepended before the prompt (with size limit validation)
-- **Tier-based selection** — models ranked by tier; best available tier selected automatically on every call
-- **Custom model overrides** — embedded default model list works out of the box, but can be overridden via config file
-- **Zero Gemini deps** — uses built-in Node.js `fetch` (Node 18+)
+Built on `@modelcontextprotocol/server` 2.x (protocol up to `2025-11-25`), zod 4 and Node's built-in `fetch`. It is bundled into a single file, `dist/mcp.js`.
 
 ---
 
-## Requirements
-
-- Node.js 18+
-- Google Gemini API key — [Get one at Google AI Studio](https://aistudio.google.com/app/apikey)
-
----
-
-## Build
-
-The build script installs dependencies, compiles the bundle, runs the test suite, and cleans up `node_modules` (in production/release runs).
-
-**Windows:**
-```cmd
-build.cmd YOUR_GEMINI_API_KEY
-```
-
-**Linux / macOS:**
-```bash
-chmod +x build.sh
-./build.sh YOUR_GEMINI_API_KEY
-```
-
-If `GEMINI_API_KEY` is already set in your environment, you can omit the argument:
-```cmd
-build.cmd
-```
-```bash
-./build.sh
-```
-
-Prefer setting the env var over the CLI argument when possible — an argument can end up in shell history and process listings.
-
-**The API key is optional at build time.** Unit tests (no API calls) always run. If no key is provided (CLI arg or env var), the build prints a warning and skips the integration tests (which spawn a real server and need a live key) instead of failing — useful for CI or packaging without exposing a key. The build only fails on an actual build/test failure, never merely on a missing key.
-
-After a successful build, `dist/` contains the self-contained bundle:
-```
-dist/
-  mcp.js        — bundled server (single file, no node_modules needed)
-```
-
----
-
-## Claude Desktop Setup
-
-Open the Claude Desktop configuration file:
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-Add the following entry:
-
-```json
-{
-  "mcpServers": {
-    "gemini-bridge": {
-      "command": "node",
-      "args": ["C:/absolute/path/to/dist/mcp.js"],
-      "env": {
-        "GEMINI_API_KEY": "your_api_key_here"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop. All three tools will be available in every conversation.
-
----
-
-## Model Configuration
-
-**Empty by default — no hardcoded fallback list.** `.storage/models.json` starts empty/absent. If `ask_gemini` is called before any models are known, it returns a clear `{ ok: false, error: "no_models", ... }` telling the calling agent to run `list_models` with `refresh: true`. There is no built-in list of hardcoded model IDs served silently as a fallback — that used to mask real discovery failures behind stale, plausible-looking data.
-
-**Boot behavior:** on every start (with an API key present), the server makes one cheap `ListModels` call (metadata only, no `generateContent`, so no token cost) and hashes the resulting catalog (after excluding non-chat product lines — see below). That hash is compared to the one stored in `.storage/models.json`:
-- **Unchanged** → nothing else happens, boot is fast, the server uses whatever was already persisted (possibly still empty).
-- **Changed, or no persisted baseline yet** → a full refresh (see below) is kicked off **in the background**. The server becomes ready immediately either way; the model list updates live once the refresh completes (typically a few seconds).
-- If the cheap check itself fails (network hiccup), it fails open — boot proceeds with whatever was already persisted, and it's retried on the next start.
-
-**Full refresh** (background-triggered on catalog change, or on-demand via `list_models({ refresh: true })`):
-1. Live `ListModels` discovery (paginated).
-2. Cheap keyword pre-filter — excludes non-`gemini-` model families (`gemma-*`, `lyria-*`, ...) and known non-chat product lines matching `GEMINI_MODEL_EXCLUDE_REGEX` (default: `image|tts|computer-use|robotics`) — catches things like `gemini-3-pro-image`, `gemini-2.5-flash-preview-tts`, `gemini-2.5-computer-use-preview-...` that technically report `generateContent` support but aren't meant for plain text prompts.
-3. **Real probe call** per surviving candidate (a short live `generateContent` request) — confirms it actually behaves like a text-chat model rather than just trusting the ID string. A candidate is only dropped if it comes back with a structural rejection (`error` status); quota/timeout/network failures during the probe don't disqualify a model, since those are about availability, not type.
-4. Ranks survivors into tiers (version number, `pro` > `flash` > `flash-lite`, small tie-break nudge against `-exp`/`-preview` tags — not a hard demotion, since some current-generation flagships are only available under a `-preview` id) and persists to `.storage/models.json`.
-
-This is the expensive path (one `ListModels` call + one real `generateContent` call per candidate — real quota cost), so it's never run automatically on every boot, only when the catalog actually changed or on explicit request.
-
-`.storage/models.json` also tracks live quota/availability status per model, updated after every real `ask_gemini`/`gemini_status` call, so the cache survives restarts without needing a refresh.
-
-**Fallback order at call time** is not just the stored `tier` — it's adjusted at runtime by two signals, so you don't need to trigger a refresh to change behavior:
-- `GEMINI_MODEL_DEPRIORITIZE_REGEX` — a model matching this pattern is always tried last (e.g. set to `"pro"` if your key's `pro` quota is chronically exhausted).
-- **Adaptive daily fail ratio** — each model's today's (UTC) success/failure counts are tracked automatically; a model that's been failing a lot today is nudged toward the back of the fallback queue. Resets every UTC day, so a bad morning doesn't permanently penalize a model.
-
-To bypass discovery entirely and pin a fully custom model list, set `GEMINI_MODELS_PATH` to an absolute path of your own JSON file — this disables auto-discovery and persistence, giving you full manual control:
-
-```json
-[
-  { "id": "gemini-2.5-pro",        "tier": 1, "desc": "best reasoning, complex tasks" },
-  { "id": "gemini-2.5-flash",      "tier": 2, "desc": "fast, capable, balanced" }
-]
-```
-
----
-
-## Tools
+## Tool
 
 ### `ask_gemini`
 
-Sends a prompt to Gemini. Automatically selects the best available model by tier, or uses the model you specify.
-
 | Parameter | Type | Description |
 |---|---|---|
-| `prompt` | string (required) | The question or instruction (max 200,000 characters) |
-| `model` | string (optional) | Escape hatch only — pins exact model, no fallback. Default: omit. |
-| `context` | array (optional) | Structured context blocks, max 5 (max 100,000 characters per block). Prefer a raw array of `{type, text}` objects — see tolerated shapes below. |
+| `prompt` | string (required) | The question or instruction, with all the context Gemini needs (max `maxPromptChars`, default 200,000 characters) |
 
-**context block:**
-```json
-{ "type": "skill|data|text", "text": "..." }
-```
-- `skill` blocks are sent natively as `systemInstruction` in the API payload.
-- `data` and `text` blocks are concatenated prepended to the user prompt.
+- **Success:** `content[0].text` is Gemini's answer.
+- **Failure:** `isError: true`. The text is written for the agent and says what to do:
+  - *temporarily unavailable* (per-minute quota, timeout, 5xx): try again in about N seconds/minutes, at most 2–3 times;
+  - *daily quota used up*: do not retry before midnight UTC;
+  - *refused to answer* (safety filter): retrying the same prompt will not help;
+  - *request rejected* (HTTP 400, e.g. prompt too long), *API key rejected*, *no usable model*: retrying will not help.
 
-**Tolerated malformed shapes** — some LLM clients don't send exactly the shape above. The server normalizes these automatically instead of rejecting them:
-- A JSON-stringified array (e.g. `"[{\"type\":\"data\",\"text\":\"...\"}]"`) is parsed automatically.
-- A single bare object (e.g. `{"type":"data","text":"..."}` instead of wrapped in `[...]`) is auto-wrapped into a one-element array.
-- A plain string inside the array (e.g. `["some note"]`) is treated as a `{type:"text", text:"some note"}` block.
-
-These are fallbacks for robustness, not the recommended format — always prefer sending the raw `[{type,text}, ...]` array directly.
-
-Composed prompt format when context is provided:
-```
-[data]
-{ "version": "2.0" }
-
-[prompt]
-Review this code for bugs.
-```
-
-**Response — always a JSON string in `content[0].text`:**
-```json
-{ "ok": true,  "text": "...", "model_used": "gemini-2.5-pro" }
-{ "ok": false, "error": "quota",   "retry": false, "best_retry_in": "43s" }
-{ "ok": false, "error": "blocked", "retry": false, "reason": "..." }
-{ "ok": false, "error": "timeout", "retry": true }
-{ "ok": false, "error": "no_models", "retry": false, "reason": "..." }
-```
-
-Always check `ok` before using `text`.
-
-**Handling failures (for the calling agent):**
-- `retry: true` — wait `best_retry_in`, then retry, up to ~3 attempts total. If it's still failing, or `best_retry_in` is very long (minutes+), stop and tell the user Gemini is temporarily unavailable instead of looping.
-- `error: "quota"`, `retry: false` — daily quota hit; don't retry until tomorrow UTC, inform the user.
-- `error: "blocked"` — content blocked by safety filters; inform the user, retrying will not help.
-- If you passed `model` and got `ok: false`, retry **without** `model` so the server can fall back to another model — unless you specifically need that exact one.
-- `error: "no_models"` — no models known yet; call `list_models` with `refresh: true` (costs real API calls), then retry `ask_gemini`.
+Annotations: `readOnlyHint: true`, `openWorldHint: true`.
 
 ---
 
-### `list_models`
+## How models are managed
 
-Returns the model list with current cache status.
+The model list is kept in `<dataDir>/models.json` together with each model's status (quota, errors, today's success/failure counts), so it survives restarts.
 
-| Parameter | Type | Description |
-|---|---|---|
-| `refresh` | boolean (optional) | If `true`, re-discovers models from the live API, filters out non-chat product lines, test-probes each remaining candidate with a real short call, and persists the validated, ranked result. **Costs real API calls** — one to list models, plus one per candidate. Default: `false` (cache only, free). |
+**Refresh** = ListModels → name filter → one short probe call (`"Hi"`) per candidate → ranking:
+- Name filter: only `gemini-<version>-…` models, minus those matching `excludeModels` (image, tts, audio, live, …).
+- Probe: a model that answers 400/403/404 or is blocked is dropped. Quota, timeout or 5xx do not drop it: those concern availability, not the model type.
+- Ranking: higher version first, then `pro` > `flash` > `flash-lite`; `-preview`/`-exp` only break ties.
 
-**Response:**
+**When the list is refreshed:**
+- **No list yet** (first start, deleted `models.json`): at startup in the background; a call that comes before it finishes waits for it.
+- **List older than `modelsTtlHours`** (default 24 h): in the background, at startup or on the next call. The old list keeps serving meanwhile.
+- **Every model failed as unusable** (404, no access): the server refreshes the list and tries again, at most once every 10 minutes.
+
+**Order of models in a call:** by rank, adjusted at runtime:
+- models matching `deprioritizeModels` go last (e.g. `"pro"` on a free-tier key);
+- a model failing many of today's (UTC) calls moves back;
+- a model on quota is skipped without a call: per-minute quota for `Retry-After`, daily quota until midnight UTC;
+- a model that answered 404/403 is skipped until the next refresh.
+
+**Log** (stderr; the hub passes it to its terminal):
+
+```
+2026-11-19T13:09:21.013Z [gemini-ask] ask_gemini (5 chars)
+2026-11-19T13:09:21.028Z [gemini-ask] Model list: 3 usable of 4 candidates (6 in catalog), 0.1 s
+2026-11-19T13:09:21.028Z [gemini-ask]   1. gemini-3-pro [ok]
+2026-11-19T13:09:21.044Z [gemini-ask]   gemini-3-pro: quota per minute, retry in 30 s
+2026-11-19T13:09:21.047Z [gemini-ask]   gemini-3-flash: OK (1.4 s, 812 chars)
+```
+
+---
+
+## Configuration
+
+```
+node dist/mcp.js [path/to/config.json]
+```
+
+The config path is absolute or relative to the working directory. Without it, `config.json` in the project root is used if it exists; otherwise everything takes its default and the key comes from `GEMINI_API_KEY`.
+
+`config.example.json`:
+
 ```json
 {
-  "refreshed": false,
-  "refreshed_at": "2026-07-11T09:00:00.000Z",
-  "stale": false,
-  "models": [
-    { "id": "gemini-2.5-pro",        "tier": 1, "desc": "auto-discovered", "status": "ok",        "retry_in": null },
-    { "id": "gemini-2.5-flash",      "tier": 2, "desc": "auto-discovered", "status": "quota_rpm", "retry_in": "43s" }
-  ]
+  "apiKey": "${GEMINI_API_KEY}",
+  "dataDir": "data",
+  "modelsTtlHours": 24,
+  "fetchTimeoutMs": 60000,
+  "maxPromptChars": 200000,
+  "excludeModels": "image|tts|audio|live|computer-use|robotics|embedding",
+  "deprioritizeModels": ""
 }
 ```
 
-`refreshed_at` is `null` and `stale` is `true` if no refresh has ever completed (e.g. right after `.storage/models.json` was deleted, before the background refresh finishes) or if it was last refreshed over 30 days ago — this is informational only; a refresh is never triggered automatically just because of staleness.
-
-**Status values:** `ok` | `quota_rpm` | `quota_rpd` | `error` | `unknown`
-
-If `models` is empty, or `ask_gemini` returned `error: "no_models"`, call this with `refresh: true`.
-
----
-
-### `gemini_status`
-
-Actively probes first N models and warms up the cache. Stops at the first successful model.
-
-| Parameter | Type | Description |
+| Key | Default | Meaning |
 |---|---|---|
-| `limit` | integer (optional) | Number of models to probe, default 3 |
+| `apiKey` | `GEMINI_API_KEY` env | Gemini API key ([Google AI Studio](https://aistudio.google.com/app/apikey)) |
+| `dataDir` | `data` | Where `models.json` is stored. Relative paths are resolved against the directory of the config file. |
+| `modelsTtlHours` | `24` | How old the model list may get before it is refreshed |
+| `fetchTimeoutMs` | `60000` | Timeout of one request to Gemini |
+| `maxPromptChars` | `200000` | Max prompt length |
+| `excludeModels` | `image\|tts\|audio\|live\|computer-use\|robotics\|embedding` | Regex (case-insensitive); matching models are never candidates |
+| `deprioritizeModels` | — | Regex; matching models are tried last |
+| `baseUrl` | Gemini v1beta | API endpoint (the tests point it to a local fake) |
 
-Use for debugging or cache warmup. For a quick overview without API calls, use `list_models` instead.
+Strings may reference environment variables as `${NAME}` (`$${NAME}` stays literal). Unknown keys are rejected.
+
+### Running it in the hub
+
+```json
+{
+  "name": "gemini",
+  "description": "Ask Google Gemini for a second opinion",
+  "command": "node",
+  "args": ["servers/gemini-ask/mcp.js", "servers/gemini-ask/config.json"],
+  "env": { "GEMINI_API_KEY": "${safebox.GEMINI_API_KEY}" },
+  "enabled": true
+}
+```
 
 ---
 
-## Environment Variables
+## Build and tests
 
-| Variable | Default | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | — | API key (required) |
-| `GEMINI_FETCH_TIMEOUT_MS` | `30000` | Per-request timeout in milliseconds |
-| `GEMINI_TTL_OK_MS` | `300000` | Cache TTL for healthy models (default 5 min) |
-| `GEMINI_MAX_PROMPT_CHARS` | `200000` | Max characters allowed in `prompt` parameter |
-| `GEMINI_MAX_CONTEXT_BLOCK_CHARS` | `100000` | Max characters allowed in a single context block |
-| `GEMINI_MODELS_PATH` | — | Optional custom path to models JSON file — disables auto-discovery/persistence |
-| `GEMINI_MODEL_EXCLUDE_REGEX` | `image\|tts\|computer-use\|robotics` | Model IDs matching this regex are excluded from discovery as ask_gemini candidates, even if the API reports generateContent support — catches non-chat product lines sharing the `gemini-` prefix |
-| `GEMINI_MODEL_DEPRIORITIZE_REGEX` | — | Models matching this regex (e.g. `"pro"`) are tried last during fallback, regardless of tier — useful on free-tier keys where `pro` models are chronically quota-limited |
-| `GEMINI_MODEL_DEPRIORITIZE_PENALTY` | `1000` | How strongly the regex match is deprioritized (internal ranking score) |
+```bash
+./build.sh        # Linux / macOS
+build.cmd         # Windows
+```
+
+The scripts install dependencies, build `dist/mcp.js`, run the tests, and remove `node_modules`. When `GEMINI_API_KEY` is set, they also run the live test.
+
+```bash
+npm run build                # dist/mcp.js
+npm test                     # unit + integration (src and dist), no key, no network
+node test/live.js [src|dist] # one real call; needs GEMINI_API_KEY, uses real quota
+```
+
+The integration tests run the server over stdio against `test/FakeGemini.js`, a local stand-in for the Gemini API. They cover discovery, fallback on quota, timeout and 5xx, restarts, refresh after TTL and after every model is gone, and error output. Set `VERBOSE=1` to see the server log.
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 src/
-  mcp.js                    — entry point (Server + StdioTransport)
-  Config.js                 — API key, timeouts, TTL, models path, exclude regex
-  GeminiClient.js            — orchestration: callGemini() (fallback loop, response shaping, no_models case)
-  GeminiProbe.js             — probeModel(): tests one model with a short live call (no disk writes)
-  GeminiAPI.js               — low-level request helpers (URL/body building, 429/response parsing)
-  GeminiModelRegistry.js     — model bootstrap: cheap catalog hash-check on boot, full probe-validated refresh on change/on-demand, .storage/models.json persistence, manual override
-  GeminiModelPrioritizer.js  — runtime fallback ordering (deprioritize regex, adaptive fail ratio)
-  ModelCache.js              — in-memory cache per model
-  Tools/
-    AskGemini.js
-    ListModels.js
-    GeminiStatus.js
-  Utils/
-    composePrompt.js
-dist/
-  mcp.js              — bundled output (esbuild, single file)
-.storage/
-  models.json         — self-maintained: catalog_hash + refreshed_at + ranked models + live status (git-ignored)
+  mcp.js             entry point: config, model list, McpServer over stdio
+  Config.js          config file, ${ENV} interpolation, validation
+  Log.js             log lines to stderr
+  GeminiAPI.js       REST calls: ListModels, generateContent, response classification
+  GeminiModels.js    model list: refresh, ranking, order, TTL, models.json
+  ModelCache.js      status per model: quota, errors, today's counts
+  GeminiClient.js    askGemini(): fallback across models, message for the agent
+  Tools/AskGemini.js the ask_gemini tool
 test/
-  unit.js             — unit tests (ModelCache, composePrompt, AskGemini schema), no API calls
-  integration.js      — integration tests via stdio JSON-RPC (uses a fixed GEMINI_MODELS_PATH fixture, not live discovery)
-  discovery-check.js  — standalone diagnostic: live catalog + category pre-filter, no probing, no persistence
-```
-
----
-
-## Running Tests
-
-```bash
-# Unit tests only (no API key needed)
-node test/unit.js
-
-# Integration tests against src/ (requires GEMINI_API_KEY)
-node test/integration.js src
-
-# Integration tests against dist/
-node test/integration.js dist
-
-# Full suite (same as npm test)
-npm test
-
-# Diagnostic: check the live model catalog directly (real network call, no
-# generateContent cost) — shows the raw catalog, the category pre-filter
-# result, and prints the exact error if the call fails (useful since that
-# error is otherwise only visible in the MCP server's own stderr, which is
-# easy to miss). Does NOT probe/validate/persist — see list_models(refresh:true)
-# for that.
-node test/discovery-check.js YOUR_GEMINI_API_KEY
+  unit.js            config, ranking, cache
+  integration.js     the server over stdio against FakeGemini
+  FakeGemini.js      local fake of the Gemini API
+  live.js            one real call
 ```
 
 ---

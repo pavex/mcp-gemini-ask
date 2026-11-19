@@ -1,6 +1,6 @@
-.storage
-.knowledge.md
 node_modules/
-dist/*.js
-dist/models.json
 package-lock.json
+dist/
+data/
+config.json
+.knowledge.md

@@ -1,276 +1,153 @@
-/**
- * Unit tests for mcp-google-gemini.
- * Tests ModelCache and composePrompt without any API calls.
- *
- * Run: node test/unit.js
- */
+// test/unit.js — unit tests without API calls or a running server.
+// Run: node test/unit.js
 
 import assert from 'node:assert/strict';
-const { Config } = await import('../src/Config.js');
+import path   from 'node:path';
+import { Config, parseConfig, interpolateEnv } from '../src/Config.js';
+import * as Cache  from '../src/ModelCache.js';
+import { scoreModelId, isCandidate } from '../src/GeminiModels.js';
+import * as Models from '../src/GeminiModels.js';
+import { formatWait } from '../src/GeminiClient.js';
 
-let passed = 0;
-let failed = 0;
-
+let passed = 0, failed = 0;
 function test(label, fn) {
   try {
     fn();
     console.log(` ✓ ${label}`);
     passed++;
   } catch (err) {
-    console.error(` ✗ ${label}`);
-    console.error(`   ${err.message}`);
+    console.error(` ✗ ${label}\n   ${err.message}`);
     failed++;
   }
 }
 
-async function testAsync(label, fn) {
-  try {
-    await fn();
-    console.log(` ✓ ${label}`);
-    passed++;
-  } catch (err) {
-    console.error(` ✗ ${label}`);
-    console.error(`   ${err.message}`);
-    failed++;
-  }
-}
+// --- Config ---
 
-// --- composePrompt ---
+console.log('\n--- Config ---');
 
-console.log('\n--- composePrompt ---');
-
-const { composePrompt } = await import('../src/Utils/composePrompt.js');
-
-test('no context → returns prompt unchanged', () => {
-  const result = composePrompt(undefined, 'Hello');
-  assert.equal(result.prompt, 'Hello');
-  assert.equal(result.systemInstruction, undefined);
+test('defaults with the key from GEMINI_API_KEY', () => {
+  const c = parseConfig({}, { env: { GEMINI_API_KEY: 'k' }, baseDir: '/srv/app' });
+  assert.equal(c.apiKey, 'k');
+  assert.equal(c.dataDir, path.resolve('/srv/app', 'data'));
+  assert.equal(c.modelsTtlMs, 24 * 3_600_000);
+  assert.ok(c.excludeModels.test('gemini-3-pro-image'));
+  assert.equal(c.deprioritizeModels, null);
+  assert.ok(c.baseUrl.startsWith('https://generativelanguage.googleapis.com/'));
 });
 
-test('empty context array → returns prompt unchanged', () => {
-  const result = composePrompt([], 'Hello');
-  assert.equal(result.prompt, 'Hello');
-  assert.equal(result.systemInstruction, undefined);
+test('${ENV} in strings is replaced, $${X} stays literal', () => {
+  assert.equal(interpolateEnv('${A}-$${B}', { A: '1' }), '1-${B}');
+  const c = parseConfig({ apiKey: '${MY_KEY}' }, { env: { MY_KEY: 'secret' } });
+  assert.equal(c.apiKey, 'secret');
 });
 
-test('single skill block', () => {
-  const result = composePrompt([{ type: 'skill', text: 'You are expert.' }], 'What is Node?');
-  assert.equal(result.systemInstruction, 'You are expert.');
-  assert.ok(result.prompt.includes('[prompt]\nWhat is Node?'));
-  assert.ok(!result.prompt.includes('[skill]'));
+test('missing env variable names the place', () => {
+  assert.throws(() => parseConfig({ apiKey: '${NOPE}' }, { env: {} }), /NOPE.*apiKey/);
 });
 
-test('multiple blocks in correct order', () => {
-  const result = composePrompt([
-    { type: 'skill', text: 'Be concise.' },
-    { type: 'data', text: '{"x":1}' },
-  ], 'Analyze this.');
-  assert.equal(result.systemInstruction, 'Be concise.');
-  const lines = result.prompt.split('\n\n');
-  assert.equal(lines[0], '[data]\n{"x":1}');
-  assert.equal(lines[1], '[prompt]\nAnalyze this.');
+test('missing key fails with a clear message', () => {
+  assert.throws(() => parseConfig({}, { env: {} }), /apiKey/);
 });
 
-test('unknown type falls back to "text"', () => {
-  const result = composePrompt([{ type: 'foobar', text: 'Something.' }], 'Q?');
-  assert.ok(result.prompt.includes('[text]\nSomething.'));
+test('unknown keys and bad values are rejected', () => {
+  assert.throws(() => parseConfig({ apiKey: 'k', foo: 1 }, { env: {} }), /Invalid config/);
+  assert.throws(() => parseConfig({ apiKey: 'k', modelsTtlHours: -1 }, { env: {} }), /modelsTtlHours/);
+  assert.throws(() => parseConfig({ apiKey: 'k', excludeModels: '(' }, { env: {} }), /excludeModels/);
 });
 
-test('max 5 blocks enforced', () => {
-  const ctx = Array.from({ length: 10 }, (_, i) => ({ type: 'text', text: `Block ${i}` }));
-  const result = composePrompt(ctx, 'Q?');
-  // 5 context blocks + 1 prompt block = 6 sections
-  assert.equal(result.prompt.split('\n\n').length, 6);
+test('absolute dataDir stays, TTL in hours, deprioritize regex', () => {
+  const abs = path.resolve('/var/gemini');
+  const c = parseConfig({ apiKey: 'k', dataDir: abs, modelsTtlHours: 2, deprioritizeModels: 'pro' }, { env: {} });
+  assert.equal(c.dataDir, abs);
+  assert.equal(c.modelsTtlMs, 7_200_000);
+  assert.ok(c.deprioritizeModels.test('gemini-3-pro'));
 });
 
-test('blocks with empty text are filtered out', () => {
-  const result = composePrompt([
-    { type: 'skill', text: '' },
-    { type: 'data', text: '   ' },
-    { type: 'text', text: 'Valid.' },
-  ], 'Q?');
-  assert.equal(result.systemInstruction, undefined);
-  assert.ok(!result.prompt.includes('[data]'));
-  assert.ok(result.prompt.includes('[text]\nValid.'));
+// --- Model ranking and filter ---
+
+console.log('\n--- Model ranking ---');
+
+Config.use(parseConfig({ apiKey: 'k', deprioritizeModels: 'lite' }, { env: {} }));
+
+test('newer version first, then pro > flash > flash-lite', () => {
+  const ids = ['gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro', 'gemini-3-flash-lite', 'gemini-2.5-flash'];
+  const ranked = [...ids].sort((a, b) => scoreModelId(b) - scoreModelId(a));
+  assert.deepEqual(ranked, ['gemini-3-pro', 'gemini-3-flash', 'gemini-3-flash-lite', 'gemini-2.5-pro', 'gemini-2.5-flash']);
 });
 
-test('text is trimmed', () => {
-  const result = composePrompt([{ type: 'text', text: '  trimmed  ' }], 'Q?');
-  assert.ok(result.prompt.includes('[text]\ntrimmed'));
+test('preview only breaks ties', () => {
+  assert.ok(scoreModelId('gemini-3-pro-preview') > scoreModelId('gemini-2.5-pro'));
+  assert.ok(scoreModelId('gemini-3-pro') > scoreModelId('gemini-3-pro-preview'));
 });
 
-test('prompt exceeding MAX_PROMPT_CHARS throws RangeError', () => {
-  const overlong = 'x'.repeat(Config.MAX_PROMPT_CHARS + 1);
-  assert.throws(() => composePrompt(undefined, overlong), RangeError);
+test('candidates: gemini-<version> text models only', () => {
+  assert.ok(isCandidate('gemini-3-pro'));
+  assert.ok(isCandidate('gemini-2.5-flash-preview-05-20'));
+  assert.ok(!isCandidate('gemma-3-27b-it'));
+  assert.ok(!isCandidate('gemini-3-pro-image'));
+  assert.ok(!isCandidate('gemini-2.5-flash-preview-tts'));
+  assert.ok(!isCandidate('gemini-exp-1206'));
 });
 
-test('context block exceeding MAX_CONTEXT_BLOCK_CHARS throws RangeError', () => {
-  const overlong = 'x'.repeat(Config.MAX_CONTEXT_BLOCK_CHARS + 1);
-  assert.throws(() => composePrompt([{ type: 'data', text: overlong }], 'Q?'), RangeError);
+test('order: tier, deprioritized last, failing models later', () => {
+  Models.setModels([{ id: 'gemini-3-flash-lite' }, { id: 'gemini-3-pro' }, { id: 'gemini-3-flash' }]);
+  assert.deepEqual(Models.orderedModels().map(m => m.id), ['gemini-3-pro', 'gemini-3-flash', 'gemini-3-flash-lite']);
+  Cache.setQuota('gemini-3-pro', 'qpm', 1);
+  Cache.countFailure('gemini-3-pro');
+  assert.deepEqual(Models.orderedModels().map(m => m.id), ['gemini-3-flash', 'gemini-3-pro', 'gemini-3-flash-lite']);
 });
 
-test('skill block exceeding MAX_CONTEXT_BLOCK_CHARS throws RangeError', () => {
-  const overlong = 'x'.repeat(Config.MAX_CONTEXT_BLOCK_CHARS + 1);
-  assert.throws(() => composePrompt([{ type: 'skill', text: overlong }], 'Q?'), RangeError);
-});
-
-test('invalid prompt type throws TypeError', () => {
-  assert.throws(() => composePrompt(undefined, undefined), TypeError);
-  assert.throws(() => composePrompt(undefined, null), TypeError);
-  assert.throws(() => composePrompt(undefined, 123), TypeError);
-});
-
-// --- AskGemini Schema Validation (Preprocessing & Error Handling) ---
-
-console.log('\n--- AskGemini Schema Validation ---');
-
-const { AskGemini } = await import('../src/Tools/AskGemini.js');
-
-test('AskGemini validation — valid arguments (no context)', () => {
-  const args = { prompt: 'Hello' };
-  const parsed = AskGemini.inputSchema.parse(args);
-  assert.equal(parsed.prompt, 'Hello');
-  assert.equal(parsed.context, undefined);
-});
-
-test('AskGemini validation — valid arguments (context as array)', () => {
-  const args = {
-    prompt: 'Hello',
-    context: [{ type: 'data', text: 'Some context' }]
-  };
-  const parsed = AskGemini.inputSchema.parse(args);
-  assert.equal(parsed.prompt, 'Hello');
-  assert.equal(parsed.context.length, 1);
-  assert.equal(parsed.context[0].type, 'data');
-  assert.equal(parsed.context[0].text, 'Some context');
-});
-
-test('AskGemini validation — valid arguments (context as stringified JSON array)', () => {
-  const args = {
-    prompt: 'Hello',
-    context: JSON.stringify([{ type: 'data', text: 'Some context' }])
-  };
-  const parsed = AskGemini.inputSchema.parse(args);
-  assert.equal(parsed.prompt, 'Hello');
-  assert.equal(parsed.context.length, 1);
-  assert.equal(parsed.context[0].type, 'data');
-  assert.equal(parsed.context[0].text, 'Some context');
-});
-
-test('AskGemini validation — invalid context JSON string throws', () => {
-  const args = {
-    prompt: 'Hello',
-    context: 'not a valid json'
-  };
-  assert.throws(() => AskGemini.inputSchema.parse(args));
-});
-
-test('AskGemini validation — missing prompt throws', () => {
-  const args = {
-    context: [{ type: 'data', text: 'Some context' }]
-  };
-  assert.throws(() => AskGemini.inputSchema.parse(args));
+test('stale after TTL', () => {
+  Models.setModels([{ id: 'gemini-3-pro' }], Date.now());
+  assert.equal(Models.isStale(), false);
+  Models.setModels([{ id: 'gemini-3-pro' }], Date.now() - 25 * 3_600_000);
+  assert.equal(Models.isStale(), true);
 });
 
 // --- ModelCache ---
 
 console.log('\n--- ModelCache ---');
 
-const Cache = await import('../src/ModelCache.js');
-
-test('getEntry unknown model → status unknown', () => {
-  const e = Cache.getEntry('model-x');
-  assert.equal(e.status, 'unknown');
-  assert.equal(e.retry_after_ts, null);
+test('unknown by default, ok after success', () => {
+  assert.equal(Cache.getEntry('m-new').status, 'unknown');
+  Cache.setOk('m-new');
+  assert.equal(Cache.getEntry('m-new').status, 'ok');
+  assert.equal(Cache.isBlocked('m-new'), false);
 });
 
-test('setOk → isBlocked false, status ok', () => {
-  Cache.setOk('model-a');
-  assert.equal(Cache.isBlocked('model-a'), false);
-  assert.equal(Cache.getEntry('model-a').status, 'ok');
+test('per-minute quota blocks until it expires', () => {
+  Cache.setQuota('m-rpm', 'qpm', 30);
+  assert.equal(Cache.isBlocked('m-rpm'), true);
+  Cache.restore('m-rpm', { ...Cache.getEntry('m-rpm'), retry_after_ts: Date.now() - 1 });
+  assert.equal(Cache.isBlocked('m-rpm'), false);
+  assert.equal(Cache.getEntry('m-rpm').status, 'unknown');
 });
 
-test('setError → isBlocked true', () => {
-  Cache.setError('model-b');
-  assert.equal(Cache.isBlocked('model-b'), true);
-  assert.equal(Cache.getEntry('model-b').status, 'error');
+test('per-day quota blocks until midnight UTC', () => {
+  Cache.setQuota('m-rpd', 'qpd', 0);
+  const midnight = new Date(); midnight.setUTCHours(24, 0, 0, 0);
+  assert.equal(Cache.getEntry('m-rpd').retry_after_ts, midnight.getTime());
+  assert.equal(Cache.isBlocked('m-rpd'), true);
 });
 
-test('setQuota qpm → isBlocked true', () => {
-  Cache.setQuota('model-c', 'qpm', 60);
-  assert.equal(Cache.isBlocked('model-c'), true);
-  assert.equal(Cache.getEntry('model-c').status, 'quota_rpm');
+test('error blocks, fail ratio counts today', () => {
+  Cache.setOk('m-err');
+  Cache.setError('m-err');
+  assert.equal(Cache.isBlocked('m-err'), true);
+  assert.equal(Cache.getFailRatio('m-err'), 0.5);
+  assert.equal(Cache.getFailRatio('m-none'), 0);
 });
 
-test('setQuota qpd → isBlocked true, retry_after_ts is midnight UTC', () => {
-  Cache.setQuota('model-d', 'qpd', 0);
-  assert.equal(Cache.isBlocked('model-d'), true);
-  assert.equal(Cache.getEntry('model-d').status, 'quota_rpd');
-  assert.ok(Cache.getEntry('model-d').retry_after_ts > Date.now());
+// --- formatWait ---
+
+console.log('\n--- formatWait ---');
+
+test('seconds, minutes, hours', () => {
+  assert.equal(formatWait(0.2), '1 s');
+  assert.equal(formatWait(43), '43 s');
+  assert.equal(formatWait(61), '2 min');
+  assert.equal(formatWait(7200), '2 h');
 });
 
-test('setQuota qpm expiry → isBlocked remains true while quota active', () => {
-  Cache.setOk('model-e');
-  Cache.setQuota('model-e', 'qpm', 60);
-  assert.equal(Cache.isBlocked('model-e'), true);
-});
-
-test('listForAgent returns all models with required fields', () => {
-  Cache.setOk('gemini-2.5-pro');
-  Cache.setQuota('gemini-2.5-flash', 'qpm', 120);
-  const models = [
-    { id: 'gemini-2.5-pro', tier: 1, desc: 'best' },
-    { id: 'gemini-2.5-flash', tier: 2, desc: 'fast' },
-    { id: 'gemini-unknown', tier: 3, desc: 'n/a' },
-  ];
-  const list = Cache.listForAgent(models);
-  assert.equal(list.length, 3);
-  assert.ok(list.every(m => 'status' in m && 'retry_in' in m && 'tier' in m && 'desc' in m));
-  assert.equal(list[0].status, 'ok');
-  assert.equal(list[0].retry_in, null);
-  assert.equal(list[1].status, 'quota_rpm');
-  assert.ok(list[1].retry_in !== null);
-  assert.equal(list[2].status, 'unknown');
-});
-
-test('retry_in format — seconds', () => {
-  Cache.setQuota('model-retry-s', 'qpm', 45);
-  const list = Cache.listForAgent([{ id: 'model-retry-s', tier: 9, desc: '' }]);
-  assert.match(list[0].retry_in, /^\d+s$/);
-});
-
-test('retry_in format — minutes', () => {
-  Cache.setQuota('model-retry-m', 'qpm', 300);
-  const list = Cache.listForAgent([{ id: 'model-retry-m', tier: 9, desc: '' }]);
-  assert.match(list[0].retry_in, /^\d+m$/);
-});
-
-test('getFailRatio — no data today → 0', () => {
-  assert.equal(Cache.getFailRatio('model-never-seen'), 0);
-});
-
-test('getFailRatio — tracks ok/fail counts within same UTC day', () => {
-  Cache.setOk('model-ratio');
-  Cache.setQuota('model-ratio', 'qpm', 60);
-  Cache.setQuota('model-ratio', 'qpm', 60);
-  // 1 ok, 2 fail → ratio 2/3
-  assert.equal(Cache.getFailRatio('model-ratio'), 2 / 3);
-});
-
-test('restore() hydrates ok_count/fail_count/count_day from persisted state', () => {
-  Cache.restore('model-restored', {
-    status: 'ok', retry_after_ts: null, quota_metric: null, last_checked: null,
-    ok_count: 3, fail_count: 1, count_day: new Date().toISOString().slice(0, 10),
-  });
-  assert.equal(Cache.getFailRatio('model-restored'), 1 / 4);
-});
-
-// --- Summary ---
-
-console.log(`\n${'─'.repeat(40)}`);
-if (failed === 0) {
-  console.log(`All ${passed} unit tests passed ✓`);
-} else {
-  console.log(`${passed} passed, ${failed} FAILED ✗`);
-  process.exit(1);
-}
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);

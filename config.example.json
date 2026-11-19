@@ -1,0 +1,9 @@
+{
+  "apiKey": "${GEMINI_API_KEY}",
+  "dataDir": "data",
+  "modelsTtlHours": 24,
+  "fetchTimeoutMs": 60000,
+  "maxPromptChars": 200000,
+  "excludeModels": "image|tts|audio|live|computer-use|robotics|embedding",
+  "deprioritizeModels": ""
+}

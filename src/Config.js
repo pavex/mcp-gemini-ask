@@ -1,41 +1,113 @@
-// Config.js — central configuration for mcp-google-gemini v2.0
+// Config.js — server configuration, loaded from a JSON file.
+//
+// argv[2] is the path to the config file (absolute, or relative to the
+// current working directory). Without it, config.json in the project root is
+// used if it exists; otherwise defaults apply and the API key comes from the
+// GEMINI_API_KEY environment variable.
+//
+// Strings may reference environment variables as ${NAME}; $${NAME} stays a
+// literal ${NAME}. A relative dataDir is resolved against the directory of
+// the config file (the project root when there is no file).
 
-const API_KEY = process.argv[2] || process.env.GEMINI_API_KEY;
+import fs   from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+export const SERVER_NAME    = 'mcp-gemini-ask';
+export const SERVER_VERSION = '3.0.0';
+
+const ConfigSchema = z.object({
+  apiKey:          z.string().min(1, 'apiKey is missing - set it in the config or via GEMINI_API_KEY'),
+  dataDir:         z.string().min(1).default('data'),
+  modelsTtlHours:  z.number().positive().default(24),
+  fetchTimeoutMs:  z.number().int().positive().default(60_000),
+  maxPromptChars:  z.number().int().positive().default(200_000),
+  excludeModels:   z.string().default('image|tts|audio|live|computer-use|robotics|embedding'),
+  deprioritizeModels: z.string().default(''),
+  baseUrl:         z.url().default('https://generativelanguage.googleapis.com/v1beta/'),
+}).strict();
+
+/** Replaces ${NAME} with env value in every string; $${NAME} stays literal ${NAME}. */
+export function interpolateEnv(value, env, where = 'config') {
+  if (typeof value === 'string') {
+    return value.replace(/\$?\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name) => {
+      if (match.startsWith('$$')) return match.slice(1);
+      if (env[name] === undefined) throw new Error(`Environment variable ${name} is not set (used in ${where}).`);
+      return env[name];
+    });
+  }
+  if (Array.isArray(value)) return value.map((v, i) => interpolateEnv(v, env, `${where}[${i}]`));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, interpolateEnv(v, env, `${where}.${k}`)]));
+  }
+  return value;
+}
+
+function toRegex(source, key) {
+  if (!source) return null;
+  try {
+    return new RegExp(source, 'i');
+  } catch (e) {
+    throw new Error(`Invalid config: ${key}: ${e.message}`);
+  }
+}
+
+/**
+ * Validates raw config (already parsed JSON) and returns the runtime config.
+ * `baseDir` resolves a relative dataDir.
+ */
+export function parseConfig(raw, { env = process.env, baseDir = ROOT_DIR } = {}) {
+  const input = interpolateEnv(raw ?? {}, env);
+  if (input.apiKey === undefined && env.GEMINI_API_KEY) input.apiKey = env.GEMINI_API_KEY;
+
+  const result = ConfigSchema.safeParse(input);
+  if (!result.success) {
+    const issues = result.error.issues.map(i => `${i.path.join('.') || 'config'}: ${i.message}`).join('; ');
+    throw new Error(`Invalid config: ${issues}`);
+  }
+
+  const c = result.data;
+  return {
+    apiKey:             c.apiKey,
+    dataDir:            path.resolve(baseDir, c.dataDir),
+    modelsTtlMs:        c.modelsTtlHours * 3_600_000,
+    fetchTimeoutMs:     c.fetchTimeoutMs,
+    maxPromptChars:     c.maxPromptChars,
+    excludeModels:      toRegex(c.excludeModels, 'excludeModels'),
+    deprioritizeModels: toRegex(c.deprioritizeModels, 'deprioritizeModels'),
+    baseUrl:            c.baseUrl.endsWith('/') ? c.baseUrl : `${c.baseUrl}/`,
+  };
+}
+
+/** Reads and validates the config file named by argv[2] (see top of file). */
+export function loadConfig(arg = process.argv[2], env = process.env) {
+  const file = arg
+    ? path.resolve(process.cwd(), arg)
+    : path.join(ROOT_DIR, 'config.json');
+
+  if (!arg && !fs.existsSync(file)) {
+    return parseConfig({}, { env, baseDir: ROOT_DIR });
+  }
+
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    throw new Error(`Cannot read config ${file}: ${e.message}`);
+  }
+  return parseConfig(raw, { env, baseDir: path.dirname(file) });
+}
+
+/**
+ * The active configuration. Filled once by mcp.js (Config.use(loadConfig()))
+ * before anything else runs; modules read it at call time, never at import.
+ */
 export const Config = {
-  API_KEY,
-
-  validate() {
-    if (!this.API_KEY) {
-      process.stderr.write('[gemini-bridge] ERROR: API key not provided. Set GEMINI_API_KEY or pass as CLI argument.\n');
-      process.exit(1);
-    }
-
-    if (process.argv[2]) {
-      process.stderr.write('[gemini-bridge] WARNING: API key passed via CLI argument — visible in process list. Prefer GEMINI_API_KEY env var.\n');
-    }
+  use(config) {
+    Object.assign(this, config);
+    return this;
   },
-
-  BASE_URL:         'https://generativelanguage.googleapis.com/v1beta/',
-  FETCH_TIMEOUT_MS: Number(process.env.GEMINI_FETCH_TIMEOUT_MS) || 30_000,
-
-  // ModelCache TTL
-  TTL_OK_MS:        Number(process.env.GEMINI_TTL_OK_MS) || 300_000,  // 5 min
-
-  // Context size limits — enforced in composePrompt before API call
-  MAX_CONTEXT_BLOCK_CHARS: Number(process.env.GEMINI_MAX_CONTEXT_BLOCK_CHARS) || 100_000,
-  MAX_PROMPT_CHARS:        Number(process.env.GEMINI_MAX_PROMPT_CHARS)        || 200_000,
-
-  // Discovery: model IDs matching this regex are excluded as candidates for
-  // ask_gemini even if the API reports generateContent support — catches
-  // specialized non-chat product lines (image/tts/robotics/computer-use/...)
-  // that share the "gemini-" naming prefix but aren't meant for text prompts.
-  MODEL_EXCLUDE_REGEX: new RegExp(
-    process.env.GEMINI_MODEL_EXCLUDE_REGEX || 'image|tts|computer-use|robotics',
-    'i'
-  ),
-
-  MCP_SERVER_NAME:    'gemini-bridge',
-  MCP_SERVER_VERSION: '2.0.0',
 };
-
