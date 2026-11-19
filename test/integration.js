@@ -276,6 +276,21 @@ await test('fixed models list: used in its order, no discovery, fallback still w
   await server.stop();
 });
 
+await test('a model failing its probe (503) goes to the back: the first ask does not wait on it', async () => {
+  fake.models = { 'gemini-9-flash': 'error500', 'gemini-8-flash': 'ok' };
+  const probeConfig = path.join(tmp, 'probe.json');
+  fs.writeFileSync(probeConfig, JSON.stringify({ apiKey: 'test-key', dataDir: 'probe-data', baseUrl: fake.url }));
+  server = startServer(probeConfig);
+  await initialize(server);
+  for (let i = 0; i < 50 && !server.stderr().includes('Model list:'); i++) await new Promise(r => setTimeout(r, 100));
+  const before = fake.calls.filter(c => c.id === 'gemini-9-flash').length;   // the probe
+  const res = await ask(server, 'Order');
+  assert.equal(res.result.content[0].text, 'gemini-8-flash says: Order');
+  assert.equal(fake.calls.filter(c => c.id === 'gemini-9-flash').length, before);
+  assert.match(server.stderr(), /1\. gemini-8-flash \[ok\][\s\S]*2\. gemini-9-flash \[unknown, failed\]/);
+  await server.stop();
+});
+
 await test('missing API key: exits with an error', async () => {
   const bad = path.join(tmp, 'bad.json');
   fs.writeFileSync(bad, JSON.stringify({ dataDir: 'data' }));

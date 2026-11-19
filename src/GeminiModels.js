@@ -165,7 +165,8 @@ async function probe(id) {
       return drop(`HTTP ${result.status} ${result.message}`);
     case 'blocked':
       return drop(result.reason);
-    default:       // network, 5xx
+    default:       // network, 5xx: counted as a failure, so the model goes to the back until it succeeds
+      Cache.countFailure(id);
       return keep(`${result.kind} ${result.status ?? ''} ${result.message ?? ''}`.trim());
   }
 }
@@ -194,7 +195,10 @@ async function runRefresh(reason) {
 
   log(`Model list: ${models.length} usable of ${candidates.length} candidates `
     + `(${allIds.length} in catalog), ${((Date.now() - started) / 1000).toFixed(1)} s`);
-  for (const m of models) log(`  ${m.tier}. ${m.id} [${Cache.getEntry(m.id).status}]`);
+  orderedModels().forEach((m, i) => {
+    const e = Cache.getEntry(m.id);
+    log(`  ${i + 1}. ${m.id} [${e.status}${e.fail_count && !e.ok_count ? ', failed' : ''}]`);
+  });
   return models;
 }
 
