@@ -137,7 +137,7 @@ The tests are TypeScript and run from `test/` directly (`test/support/register.m
 - `test/deployment/`: the built `dist/mcp.js` over stdio, as the hub runs it;
 - `test/structure.test.ts`: the import boundaries and the build.
 
-Code style and structure follow mcp-hub-v2: see [CLAUDE.md](CLAUDE.md).
+Code style and structure follow mcp-hub-v2: 4-space indent, no semicolons, `else` on a new line, one class per file with its parts in a folder of its name, `interfaces/` and `types/` folders, enums instead of string unions. `npm run style` applies the mechanical part.
 
 ---
 
