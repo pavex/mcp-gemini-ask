@@ -1,27 +1,28 @@
 {
   "name": "mcp-gemini-ask",
   "version": "3.0.0",
-  "description": "MCP server - ask Google Gemini, with self-managed model list and fallback",
+  "description": "MCP server - ask Google Gemini, with a self-managed model list and fallback",
+  "private": true,
   "type": "module",
-  "main": "dist/mcp.js",
-  "bin": {
-    "mcp-gemini-ask": "dist/mcp.js"
+  "engines": {
+    "node": ">=22"
   },
   "scripts": {
+    "build": "npm run typecheck && node esbuild.config.mjs",
     "start": "node dist/mcp.js",
-    "dev": "node src/mcp.js",
-    "build": "esbuild src/mcp.js --bundle --platform=node --format=esm --target=node20 --outfile=dist/mcp.js --minify --legal-comments=none --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\"",
-    "test": "node test/unit.js && node test/integration.js src && node test/integration.js dist",
-    "live": "node test/live.js dist"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && npm run test:run",
+    "test:run": "node --import ./test/support/register.mjs --test \"test/**/*.test.ts\"",
+    "style": "node scripts/restyle.mjs",
+    "live": "node scripts/live-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
-  },
-  "engines": {
-    "node": ">=20"
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.8.0"
   }
 }

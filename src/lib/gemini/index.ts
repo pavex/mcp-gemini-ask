@@ -1,0 +1,12 @@
+// The public API of lib/gemini. Files of the package import each other directly.
+export { GeminiApi } from './GeminiApi'
+export { GeminiModelList } from './GeminiModelList'
+export { scoreModelId } from './GeminiModelList/ModelRanking'
+export type { GeminiApiOptions } from './interfaces/GeminiApiOptions'
+export type { GeminiModelListOptions } from './interfaces/GeminiModelListOptions'
+export type { ListedModel } from './interfaces/ListedModel'
+export type { ModelState } from './interfaces/ModelState'
+export { GenerateKind } from './types/GenerateKind'
+export type { GenerateResult } from './types/GenerateResult'
+export { ModelStatus } from './types/ModelStatus'
+export { QuotaPeriod } from './types/QuotaPeriod'
