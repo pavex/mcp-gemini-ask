@@ -93,7 +93,9 @@ fs.writeFileSync(configPath, JSON.stringify({
   apiKey:         '${FAKE_GEMINI_KEY}',
   dataDir:        'data',
   baseUrl:        fake.url,
-  fetchTimeoutMs: 2000,
+  includeModels:  '',        // all gemini-* text models; the default "flash" is tested below
+  timeoutMs:      5500,
+  modelTimeoutMs: 2000,
 }));
 process.env.FAKE_GEMINI_KEY = 'test-key';   // inherited by the server, read via ${...}
 
@@ -145,19 +147,26 @@ await test('model on quota is skipped without a call', async () => {
   assert.equal(fake.calls.filter(c => c.id === 'gemini-3-pro').length, before);
 });
 
-await test('fallback: server error and timeout -> next model answers', async () => {
-  fake.models['gemini-3-flash'] = 'slow';
-  fake.models['gemini-2.5-flash'] = 'ok';
+await test('fallback: a model that never finishes its answer times out, next model answers', async () => {
+  fake.models['gemini-3-flash'] = 'stall';
+  const started = Date.now();
   const res = await ask(server, 'Fourth');
   assert.equal(res.result.content[0].text, 'gemini-2.5-flash says: Fourth');
+  assert.ok(Date.now() - started < 3500, `took ${Date.now() - started} ms`);
 });
 
-await test('all models on quota or down: isError with a retry hint', async () => {
-  fake.models['gemini-3-flash'] = 'error500';
+await test('a model that timed out is paused: skipped without a call', async () => {
+  const before = fake.calls.filter(c => c.id === 'gemini-3-flash').length;
+  const res = await ask(server, 'Paused');
+  assert.equal(res.result.content[0].text, 'gemini-2.5-flash says: Paused');
+  assert.equal(fake.calls.filter(c => c.id === 'gemini-3-flash').length, before);
+});
+
+await test('all models on quota or paused: isError with a retry hint', async () => {
   fake.models['gemini-2.5-flash'] = 'quota_rpd';
   const res = await ask(server, 'Fifth');
   assert.equal(res.result.isError, true);
-  assert.match(res.result.content[0].text, /temporarily unavailable.*Try again in about/s);
+  assert.match(res.result.content[0].text, /temporarily unavailable.*not responding.*Try again in about/s);
 });
 
 await test('empty prompt: validation error', async () => {
@@ -172,15 +181,17 @@ await test('unknown tool: error', async () => {
 
 await server.stop();
 
-await test('restart: stored list is reused, no new discovery', async () => {
+await test('restart: stored list and statuses are reused, no discovery, blocked models not called', async () => {
   for (const id of Object.keys(fake.models)) fake.models[id] = 'ok';
   const listCalls = fake.listCalls;
+  const calls     = fake.calls.length;
   server = startServer(configPath);
   await initialize(server);
   const res = await ask(server, 'Again');
-  // gemini-3-pro is still on its stored per-minute quota, so the next one answers
-  assert.equal(res.result.content[0].text, 'gemini-3-flash says: Again');
+  // per-minute quota, pause and daily quota were all stored
+  assert.equal(res.result.isError, true);
   assert.equal(fake.listCalls, listCalls);
+  assert.equal(fake.calls.length, calls);
 });
 
 await test('every model gone: list is refreshed and a new model answers', async () => {
@@ -213,12 +224,57 @@ await test('list older than TTL: refreshed in the background at startup', async 
   assert.equal(res.result.content[0].text, 'gemini-4-pro says: Fresh');
 });
 
-await test('logs go to stderr: model list and per-model outcome', async () => {
+await test('logs go to stderr: probes, model list and per-model outcome', async () => {
+  assert.match(server.stderr(), /probe gemini-4-pro: ok/);
   assert.match(server.stderr(), /Model list: 2 usable/);
   assert.match(server.stderr(), /gemini-4-pro: OK/);
 });
 
+await test('time limit: the whole call ends within timeoutMs even if models hang', async () => {
+  fake.models['gemini-4-pro']   = 'stall';
+  fake.models['gemini-4-flash'] = 'stall';
+  const started = Date.now();
+  const res = await ask(server, 'Hang');
+  const took = Date.now() - started;
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /temporarily unavailable.*not responding/s);
+  assert.ok(took < 5700, `took ${took} ms`);
+});
+
 await server.stop();
+
+await test('default includeModels "flash": a filter change shrinks the stored list and triggers a refresh', async () => {
+  fake.models = {
+    'gemini-4-pro': 'ok', 'gemini-4-flash': 'ok', 'gemini-4-flash-lite': 'ok',
+    'gemini-4-flash-image': 'ok', 'gemini-4-argon': 'ok',
+  };
+  const flashConfig = path.join(tmp, 'flash.json');
+  fs.writeFileSync(flashConfig, JSON.stringify({ apiKey: 'test-key', dataDir: 'data', baseUrl: fake.url }));
+  server = startServer(flashConfig);
+  await initialize(server);
+  for (let i = 0; i < 50 && !server.stderr().includes('Model list:'); i++) await new Promise(r => setTimeout(r, 100));
+  const stored = JSON.parse(fs.readFileSync(modelsFile, 'utf8'));
+  assert.deepEqual(stored.models.map(m => m.id), ['gemini-4-flash', 'gemini-4-flash-lite']);
+  const res = await ask(server, 'Flash');
+  assert.match(res.result.content[0].text, /^gemini-4-flash(-lite)? says: Flash$/);  // 4-flash failed earlier today, so may go second
+  await server.stop();
+});
+
+await test('fixed models list: used in its order, no discovery, fallback still works', async () => {
+  fake.models = { 'my-model-a': 'quota_rpm', 'my-model-b': 'ok', 'gemini-4-flash': 'ok' };
+  const fixedConfig = path.join(tmp, 'fixed.json');
+  fs.writeFileSync(fixedConfig, JSON.stringify({
+    apiKey: 'test-key', dataDir: 'fixed-data', baseUrl: fake.url, models: ['my-model-a', 'models/my-model-b'],
+  }));
+  const listCalls = fake.listCalls;
+  server = startServer(fixedConfig);
+  await initialize(server);
+  const res = await ask(server, 'Fixed');
+  assert.equal(res.result.content[0].text, 'my-model-b says: Fixed');
+  assert.equal(fake.listCalls, listCalls);
+  assert.match(server.stderr(), /Fixed model list from config/);
+  await server.stop();
+});
 
 await test('missing API key: exits with an error', async () => {
   const bad = path.join(tmp, 'bad.json');

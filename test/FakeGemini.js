@@ -1,7 +1,8 @@
 // test/FakeGemini.js — a local stand-in for the Gemini REST API.
 //
 // models: { [id]: behavior } where behavior is one of
-//   'ok' | 'quota_rpm' | 'quota_rpd' | 'gone' | 'rejected' | 'forbidden' | 'error500' | 'slow'
+//   'ok' | 'quota_rpm' | 'quota_rpd' | 'gone' | 'rejected' | 'forbidden' | 'error500'
+//   | 'slow' (answers after 5 s) | 'stall' (sends headers, never finishes the body)
 // Only IDs present in `models` are listed by ListModels; `calls` records
 // every generateContent call as { id, prompt }.
 
@@ -46,6 +47,9 @@ export async function startFakeGemini(models = {}) {
       case 'forbidden': return send(403, { error: { message: 'Permission denied' } });
       case 'error500':  return send(500, { error: { message: 'Internal' } });
       case 'slow':      return setTimeout(() => send(200, { candidates: [] }), 5_000);
+      case 'stall':     // headers and the start of the body, then nothing
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.write('{"candidates":');
       default:          return send(404, { error: { message: `models/${id} is not found` } });
     }
   });

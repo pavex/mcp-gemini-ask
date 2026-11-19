@@ -1,7 +1,8 @@
-// test/live.js — one real round trip against the Gemini API.
-// Needs GEMINI_API_KEY. Uses a temporary data directory, so the first call
-// runs a full model discovery (one ListModels call plus one short probe
-// call per candidate model - real quota).
+// test/live.js — real round trips against the Gemini API.
+// Needs GEMINI_API_KEY. Uses a temporary data directory, so the server runs
+// a full model discovery first (one ListModels call plus one short probe
+// call per candidate model - real quota). If the answer is "getting ready",
+// the call is repeated, like an agent would.
 //
 // Run: node test/live.js [src|dist]   (default: dist)
 
@@ -25,28 +26,40 @@ fs.writeFileSync(configPath, JSON.stringify({ apiKey: '${GEMINI_API_KEY}', dataD
 const child = spawn(process.execPath, [serverPath, configPath], { stdio: ['pipe', 'pipe', 'inherit'] });
 const send  = (msg) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
 
+const waiting = new Map();
 let buffer = '';
-const response = new Promise((resolve) => {
-  child.stdout.on('data', (chunk) => {
-    buffer += chunk;
-    for (const line of buffer.split('\n').slice(0, -1)) {
-      const msg = JSON.parse(line);
-      if (msg.id === 2) resolve(msg);
-    }
-    buffer = buffer.slice(buffer.lastIndexOf('\n') + 1);
-  });
+child.stdout.on('data', (chunk) => {
+  buffer += chunk;
+  let nl;
+  while ((nl = buffer.indexOf('\n')) >= 0) {
+    const line = buffer.slice(0, nl).trim();
+    buffer = buffer.slice(nl + 1);
+    if (!line) continue;
+    const msg = JSON.parse(line);
+    waiting.get(msg.id)?.(msg);
+  }
 });
-
-send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'live', version: '1' } } });
-send({ method: 'notifications/initialized' });
-send({ id: 2, method: 'tools/call', params: { name: 'ask_gemini', arguments: { prompt: 'Reply with the single word OK.' } } });
+const call = (id, method, params) => new Promise((resolve) => { waiting.set(id, resolve); send({ id, method, params }); });
 
 const timer = setTimeout(() => { console.error('Timed out after 180 s'); child.kill(); process.exit(1); }, 180_000);
-const res   = await response;
+
+await call(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'live', version: '1' } });
+send({ method: 'notifications/initialized' });
+
+let res;
+for (let attempt = 1; attempt <= 4; attempt++) {
+  const started = Date.now();
+  res = await call(attempt + 1, 'tools/call', { name: 'ask_gemini', arguments: { prompt: 'Reply with the single word OK.' } });
+  const text = res.result?.content?.[0]?.text ?? '';
+  console.log(`\n[live] attempt ${attempt}: ${((Date.now() - started) / 1000).toFixed(1)} s, ${res.result?.isError ? 'ERROR' : 'OK'}\n`);
+  if (!/getting ready/.test(text)) break;
+  await new Promise(r => setTimeout(r, 15_000));
+}
+
 clearTimeout(timer);
 child.kill();
 fs.rmSync(tmp, { recursive: true, force: true });
 
 const result = res.result ?? {};
-console.log(`\nask_gemini -> ${result.isError ? 'ERROR' : 'OK'}: ${result.content?.[0]?.text ?? JSON.stringify(res.error)}`);
+console.log(`ask_gemini -> ${result.isError ? 'ERROR' : 'OK'}: ${result.content?.[0]?.text ?? JSON.stringify(res.error)}`);
 process.exit(result.isError || res.error ? 1 : 0);

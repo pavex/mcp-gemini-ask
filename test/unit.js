@@ -31,6 +31,10 @@ test('defaults with the key from GEMINI_API_KEY', () => {
   assert.equal(c.dataDir, path.resolve('/srv/app', 'data'));
   assert.equal(c.modelsTtlMs, 24 * 3_600_000);
   assert.ok(c.excludeModels.test('gemini-3-pro-image'));
+  assert.ok(c.includeModels.test('gemini-3-flash-lite'));
+  assert.deepEqual(c.models, []);
+  assert.equal(c.timeoutMs, 25_000);
+  assert.equal(c.modelTimeoutMs, 20_000);
   assert.equal(c.deprioritizeModels, null);
   assert.ok(c.baseUrl.startsWith('https://generativelanguage.googleapis.com/'));
 });
@@ -53,6 +57,17 @@ test('unknown keys and bad values are rejected', () => {
   assert.throws(() => parseConfig({ apiKey: 'k', foo: 1 }, { env: {} }), /Invalid config/);
   assert.throws(() => parseConfig({ apiKey: 'k', modelsTtlHours: -1 }, { env: {} }), /modelsTtlHours/);
   assert.throws(() => parseConfig({ apiKey: 'k', excludeModels: '(' }, { env: {} }), /excludeModels/);
+});
+
+test('models list: "models/" prefix stripped, duplicates removed; includeModels "" = no filter', () => {
+  const c = parseConfig({ apiKey: 'k', models: ['models/gemini-3-flash', 'gemini-3-flash', 'x'], includeModels: '' }, { env: {} });
+  assert.deepEqual(c.models, ['gemini-3-flash', 'x']);
+  assert.equal(c.includeModels, null);
+});
+
+test('modelTimeoutMs never exceeds timeoutMs', () => {
+  const c = parseConfig({ apiKey: 'k', timeoutMs: 10_000, modelTimeoutMs: 60_000 }, { env: {} });
+  assert.equal(c.modelTimeoutMs, 10_000);
 });
 
 test('absolute dataDir stays, TTL in hours, deprioritize regex', () => {
@@ -80,9 +95,15 @@ test('preview only breaks ties', () => {
   assert.ok(scoreModelId('gemini-3-pro') > scoreModelId('gemini-3-pro-preview'));
 });
 
-test('candidates: gemini-<version> text models only', () => {
-  assert.ok(isCandidate('gemini-3-pro'));
+test('candidates (default include "flash"): flash and flash-lite text models only', () => {
+  assert.ok(isCandidate('gemini-3-flash'));
+  assert.ok(isCandidate('gemini-3.1-flash-lite-preview'));
   assert.ok(isCandidate('gemini-2.5-flash-preview-05-20'));
+  assert.ok(!isCandidate('gemini-3-pro'));
+  assert.ok(!isCandidate('gemini-4-argon'));
+  assert.ok(!isCandidate('gemini-3.5-transcribe'));
+  assert.ok(!isCandidate('gemini-2.5-flash-image'));
+  assert.ok(!isCandidate('gemini-2.5-flash-native-audio-latest'));
   assert.ok(!isCandidate('gemma-3-27b-it'));
   assert.ok(!isCandidate('gemini-3-pro-image'));
   assert.ok(!isCandidate('gemini-2.5-flash-preview-tts'));

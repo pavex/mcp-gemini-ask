@@ -23,8 +23,11 @@ const ConfigSchema = z.object({
   apiKey:          z.string().min(1, 'apiKey is missing - set it in the config or via GEMINI_API_KEY'),
   dataDir:         z.string().min(1).default('data'),
   modelsTtlHours:  z.number().positive().default(24),
-  fetchTimeoutMs:  z.number().int().positive().default(60_000),
+  timeoutMs:       z.number().int().positive().default(25_000),   // whole ask_gemini call (the hub gives up at 30 s)
+  modelTimeoutMs:  z.number().int().positive().default(20_000),   // one model; a silent model is paused afterwards
   maxPromptChars:  z.number().int().positive().default(200_000),
+  models:          z.array(z.string().min(1)).default([]),        // fixed list, in order; turns discovery off
+  includeModels:   z.string().default('flash'),                   // discovery keeps only matching IDs ("" = all)
   excludeModels:   z.string().default('image|tts|audio|live|computer-use|robotics|embedding'),
   deprioritizeModels: z.string().default(''),
   baseUrl:         z.url().default('https://generativelanguage.googleapis.com/v1beta/'),
@@ -74,8 +77,11 @@ export function parseConfig(raw, { env = process.env, baseDir = ROOT_DIR } = {})
     apiKey:             c.apiKey,
     dataDir:            path.resolve(baseDir, c.dataDir),
     modelsTtlMs:        c.modelsTtlHours * 3_600_000,
-    fetchTimeoutMs:     c.fetchTimeoutMs,
+    timeoutMs:          c.timeoutMs,
+    modelTimeoutMs:     Math.min(c.modelTimeoutMs, c.timeoutMs),
     maxPromptChars:     c.maxPromptChars,
+    models:             [...new Set(c.models.map(id => id.replace(/^models\//, '')))],
+    includeModels:      toRegex(c.includeModels, 'includeModels'),
     excludeModels:      toRegex(c.excludeModels, 'excludeModels'),
     deprioritizeModels: toRegex(c.deprioritizeModels, 'deprioritizeModels'),
     baseUrl:            c.baseUrl.endsWith('/') ? c.baseUrl : `${c.baseUrl}/`,

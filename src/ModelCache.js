@@ -1,7 +1,8 @@
 // ModelCache.js — in-memory availability status per model.
 //
-// status: 'ok' | 'quota_rpm' | 'quota_rpd' | 'error' | 'unknown'
+// status: 'ok' | 'quota_rpm' | 'quota_rpd' | 'slow' | 'error' | 'unknown'
 //   quota_*  skipped until retry_after_ts (per-day quota: next midnight UTC)
+//   slow     did not answer in time; skipped until retry_after_ts
 //   error    skipped until the next model list refresh re-probes the model
 // ok_count / fail_count count today's (UTC) outcomes for adaptive ordering.
 
@@ -55,6 +56,16 @@ export function setQuota(modelId, quotaMetric, retryAfterSec) {
   });
 }
 
+/** Pauses a model that did not answer in time. */
+export function setSlow(modelId, pauseSec) {
+  cache.set(modelId, {
+    status: 'slow',
+    retry_after_ts: Date.now() + pauseSec * 1000,
+    last_checked: Date.now(),
+    ...counts(modelId, false),
+  });
+}
+
 export function setError(modelId) {
   cache.set(modelId, { status: 'error', retry_after_ts: null, last_checked: Date.now(), ...counts(modelId, false) });
 }
@@ -69,11 +80,11 @@ export function restore(modelId, entry) {
   cache.set(modelId, { ...EMPTY, ...entry });
 }
 
-/** True while the model is on quota or marked unusable. An expired quota is reset to unknown. */
+/** True while the model is on quota, paused or unusable. An expired block is reset to unknown. */
 export function isBlocked(modelId) {
   const entry = getEntry(modelId);
   if (entry.status === 'error') return true;
-  if (entry.status === 'quota_rpm' || entry.status === 'quota_rpd') {
+  if (entry.status === 'quota_rpm' || entry.status === 'quota_rpd' || entry.status === 'slow') {
     if (entry.retry_after_ts && Date.now() < entry.retry_after_ts) return true;
     cache.set(modelId, { ...entry, status: 'unknown', retry_after_ts: null });
   }

@@ -29,23 +29,28 @@ Annotations: `readOnlyHint: true`, `openWorldHint: true`.
 
 ## How models are managed
 
-The model list is kept in `<dataDir>/models.json` together with each model's status (quota, errors, today's success/failure counts), so it survives restarts.
+The model list is kept in `<dataDir>/models.json` together with each model's status (quota, pauses, errors, today's success/failure counts), so it survives restarts.
 
-**Refresh** = ListModels → name filter → one short probe call (`"Hi"`) per candidate → ranking:
-- Name filter: only `gemini-<version>-…` models, minus those matching `excludeModels` (image, tts, audio, live, …).
-- Probe: a model that answers 400/403/404 or is blocked is dropped. Quota, timeout or 5xx do not drop it: those concern availability, not the model type.
+**Your own list:** when `models` in the config is not empty, the server uses exactly those models, in that order. It does no discovery, no probing and no TTL refresh. Fallback, quota and pause handling work as below.
+
+**Otherwise the server discovers the models itself.** Refresh = ListModels → name filter → one short probe call (`"Hi"`, 10 s limit) per candidate → ranking:
+- Name filter: `gemini-*` models matching `includeModels` (default `flash`: flash and flash-lite, the ones usable on the free tier) and not matching `excludeModels` (image, tts, audio, live, …).
+- Probe: a model that answers 400/403/404 or is blocked is dropped, and the log says why. Quota, a missing answer or 5xx do not drop it: those concern availability, not the model type. A model that does not answer within 10 s is paused.
 - Ranking: higher version first, then `pro` > `flash` > `flash-lite`; `-preview`/`-exp` only break ties.
 
 **When the list is refreshed:**
-- **No list yet** (first start, deleted `models.json`): at startup in the background; a call that comes before it finishes waits for it.
-- **List older than `modelsTtlHours`** (default 24 h): in the background, at startup or on the next call. The old list keeps serving meanwhile.
+- **No list yet** (first start, deleted `models.json`): at startup in the background; a call that comes before it finishes waits for it, as long as the time limit allows.
+- **List older than `modelsTtlHours`** (default 24 h), **or `includeModels`/`excludeModels` changed:** in the background, at startup or on the next call. The old list, filtered by the current settings, keeps serving meanwhile.
 - **Every model failed as unusable** (404, no access): the server refreshes the list and tries again, at most once every 10 minutes.
 
 **Order of models in a call:** by rank, adjusted at runtime:
-- models matching `deprioritizeModels` go last (e.g. `"pro"` on a free-tier key);
+- models matching `deprioritizeModels` go last;
 - a model failing many of today's (UTC) calls moves back;
 - a model on quota is skipped without a call: per-minute quota for `Retry-After`, daily quota until midnight UTC;
+- a model that did not answer in time is **paused for 10 minutes**;
 - a model that answered 404/403 is skipped until the next refresh.
+
+**Time limits:** one `ask_gemini` call ends within `timeoutMs` (default 25 s, because the hub gives up on a request after 30 s). Each model gets at most `modelTimeoutMs` (default 20 s) of it. The limit covers the whole answer, so a model that sends headers and then stalls is cut off too. Fewer than 3 s left means no further model is started.
 
 **Log** (stderr; the hub passes it to its terminal):
 
@@ -73,11 +78,14 @@ The config path is absolute or relative to the working directory. Without it, `c
 {
   "apiKey": "${GEMINI_API_KEY}",
   "dataDir": "data",
-  "modelsTtlHours": 24,
-  "fetchTimeoutMs": 60000,
-  "maxPromptChars": 200000,
+  "models": [],
+  "includeModels": "flash",
   "excludeModels": "image|tts|audio|live|computer-use|robotics|embedding",
-  "deprioritizeModels": ""
+  "deprioritizeModels": "",
+  "modelsTtlHours": 24,
+  "timeoutMs": 25000,
+  "modelTimeoutMs": 20000,
+  "maxPromptChars": 200000
 }
 ```
 
@@ -85,11 +93,14 @@ The config path is absolute or relative to the working directory. Without it, `c
 |---|---|---|
 | `apiKey` | `GEMINI_API_KEY` env | Gemini API key ([Google AI Studio](https://aistudio.google.com/app/apikey)) |
 | `dataDir` | `data` | Where `models.json` is stored. Relative paths are resolved against the directory of the config file. |
-| `modelsTtlHours` | `24` | How old the model list may get before it is refreshed |
-| `fetchTimeoutMs` | `60000` | Timeout of one request to Gemini |
-| `maxPromptChars` | `200000` | Max prompt length |
-| `excludeModels` | `image\|tts\|audio\|live\|computer-use\|robotics\|embedding` | Regex (case-insensitive); matching models are never candidates |
+| `models` | `[]` | Your own model IDs, best first, e.g. `["gemini-3-flash", "gemini-2.5-flash"]`. When not empty, discovery is off. |
+| `includeModels` | `flash` | Regex (case-insensitive); discovery keeps only matching models. `""` = all `gemini-*` models, e.g. `"flash\|pro"` adds pro. |
+| `excludeModels` | `image\|tts\|audio\|live\|computer-use\|robotics\|embedding` | Regex; matching models are never discovered |
 | `deprioritizeModels` | — | Regex; matching models are tried last |
+| `modelsTtlHours` | `24` | How old the discovered list may get before it is refreshed |
+| `timeoutMs` | `25000` | Time limit of a whole `ask_gemini` call, fallbacks included |
+| `modelTimeoutMs` | `20000` | Time limit of one model (capped at `timeoutMs`) |
+| `maxPromptChars` | `200000` | Max prompt length |
 | `baseUrl` | Gemini v1beta | API endpoint (the tests point it to a local fake) |
 
 Strings may reference environment variables as `${NAME}` (`$${NAME}` stays literal). Unknown keys are rejected.
@@ -124,7 +135,7 @@ npm test                     # unit + integration (src and dist), no key, no net
 node test/live.js [src|dist] # one real call; needs GEMINI_API_KEY, uses real quota
 ```
 
-The integration tests run the server over stdio against `test/FakeGemini.js`, a local stand-in for the Gemini API. They cover discovery, fallback on quota, timeout and 5xx, restarts, refresh after TTL and after every model is gone, and error output. Set `VERBOSE=1` to see the server log.
+The integration tests run the server over stdio against `test/FakeGemini.js`, a local stand-in for the Gemini API. They cover discovery and the name filter, the fixed model list, fallback on quota, stalled answers and 5xx, pausing, the time limit, restarts, refresh after TTL and after every model is gone, and error output. Set `VERBOSE=1` to see the server log.
 
 ---
 
