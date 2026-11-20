@@ -18,7 +18,8 @@ const STILL_LOADING = Symbol('still loading')
 // One ask() tries the models in the order of the list until one answers;
 // models on quota, paused or unusable are skipped without a call. The whole
 // call ends within timeoutMs (the hub gives up on a request after 30 s), one
-// model gets at most modelTimeoutMs of it. When no list exists yet, ask()
+// model gets at most modelTimeoutMs of it; a model that times out under less
+// than that (the deadline was near) is not paused. When no list exists yet, ask()
 // waits for the first one as long as the time allows. When every model is
 // gone or without access, the list is refreshed once and the round repeated.
 // What happens per model goes to the log; the agent gets the answer or one
@@ -96,8 +97,17 @@ export class GeminiAsk {
             }
 
             const started = Date.now()
-            const result = await this.api.generate(id, prompt, Math.min(this.options.modelTimeoutMs, remaining))
-            this.list.record(id, result)
+            const limit = Math.min(this.options.modelTimeoutMs, remaining)
+            const result = await this.api.generate(id, prompt, limit)
+            // A timeout under a limit the deadline shortened says nothing about
+            // the model: one more failure, no pause.
+            const cutShort = result.kind === GenerateKind.Timeout && limit < this.options.modelTimeoutMs
+            if (cutShort) {
+                this.list.recordFailure(id)
+            }
+            else {
+                this.list.record(id, result)
+            }
             const took = `${((Date.now() - started) / 1000).toFixed(1)} s`
             switch (result.kind) {
                 case GenerateKind.Ok:
@@ -130,7 +140,13 @@ export class GeminiAsk {
                 case GenerateKind.Timeout:
                     stats.unavailable++
                     stats.detail = result.message
-                    this.logger.write(`  ${id}: ${result.message}, paused`)
+                    if (cutShort) {
+                        stats.outOfTime = true
+                        this.logger.write(`  ${id}: ${result.message} (cut short by the time limit of ${this.options.timeoutMs / 1000} s, not paused)`)
+                    }
+                    else {
+                        this.logger.write(`  ${id}: ${result.message}, paused`)
+                    }
                     break
                 case GenerateKind.Network:
                     stats.unavailable++

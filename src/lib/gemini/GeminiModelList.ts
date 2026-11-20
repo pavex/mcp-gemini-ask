@@ -142,6 +142,12 @@ export class GeminiModelList {
     }
 
 
+    /** Counts one failure without changing the status - e.g. a timeout under the caller's shortened limit, which says nothing about the model. */
+    recordFailure(id: string, now = Date.now()): void {
+        this.states.failure(id, now)
+    }
+
+
     /** Reads the storage file: the list (filtered by the current include/exclude) and the states. A missing file is an empty start. */
     load(): void {
         const stored = this.readStorage()

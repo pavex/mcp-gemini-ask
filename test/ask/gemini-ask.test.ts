@@ -91,6 +91,20 @@ test('the whole call ends within timeoutMs even when every model hangs', async t
 })
 
 
+test('a timeout under a limit the deadline shortened does not pause the model', async t => {
+    const { ask, fake } = await setUp(t, { 'gemini-3-pro': 'ok', 'gemini-3-flash': 'ok' }, { timeoutMs: 7_500, modelTimeoutMs: 4_000 })
+    await ask('warm up')
+    fake.models['gemini-3-pro'] = 'stall'
+    fake.models['gemini-3-flash'] = 'stall'
+    // pro: the full 4 s, paused; flash: the 3.5 s left, cut short.
+    assert.match((await ask('x') as { message: string }).message, /not responding.*time limit of 7\.5 s reached/)
+
+    fake.models['gemini-3-flash'] = 'ok'
+    assert.deepEqual(await ask('Again'), { ok: true, text: 'gemini-3-flash says: Again' })
+    assert.deepEqual(fake.calls.filter(call => call.prompt === 'Again').map(call => call.id), ['gemini-3-flash'])
+})
+
+
 test('a slow first discovery: "getting ready" within the time limit', async t => {
     const { ask, fake } = await setUp(t, { 'gemini-3-flash': 'ok' })
     fake.listDelayMs = 4_000

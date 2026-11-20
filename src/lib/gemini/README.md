@@ -49,6 +49,7 @@ The public API is `index.ts`: `import { GeminiApi, GeminiModelList } from './lib
 - `ordered()`: rank, deprioritized last, today's failures further back.
 - `isBlocked(id)`: skip now? (quota, pause, unusable; a quota or pause that ran out turns back to `Unknown`).
 - `record(id, result)`: turns a `generate()` outcome into the model's state: `Ok`, quota until its time, `Timeout` → paused, `Gone`/`NoAccess` → unusable until the next refresh, anything else one more failure.
+- `recordFailure(id)`: one more failure, the status unchanged - for an outcome that says nothing about the model, such as a timeout under a limit the caller shortened.
 - `state(id): ModelState`, `save()`, `fixed`, `size`, `isStale()`, `refreshAgeMs()`, `isCandidate(id)`.
 
 `modelVersion(id)` reads the version from an ID (`gemini-3.5-flash` → 3.5, `gemini-flash-latest` → null). `scoreModelId(id)` is the ranking alone: newer version, then pro > flash > flash-lite, `-preview`/`-exp` as a tie-break, IDs without a version `-Infinity`.
