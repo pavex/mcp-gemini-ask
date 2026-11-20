@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { ThinkingLevel } from '../lib/gemini'
 import { CONFIG_FILE } from '../Consts'
 import type { GeminiAskConfig } from './interfaces/GeminiAskConfig'
 
@@ -18,6 +19,7 @@ const ConfigSchema = z.object({
     excludeModels: z.string().default('image|tts|audio|live|computer-use|robotics|embedding'),
     deprioritizeModels: z.string().default(''),
     modelsTtlHours: z.number().positive().default(24),
+    thinkingLevel: z.enum(['', ...Object.values(ThinkingLevel)]).default(''),
     timeoutMs: z.number().int().positive().default(25_000),
     modelTimeoutMs: z.number().int().positive().default(20_000),
     maxPromptChars: z.number().int().positive().default(200_000),
@@ -85,6 +87,7 @@ export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv, baseDir: strin
         excludeModels: pattern(config.excludeModels, 'excludeModels'),
         deprioritizeModels: pattern(config.deprioritizeModels, 'deprioritizeModels'),
         modelsTtlMs: config.modelsTtlHours * 3_600_000,
+        thinkingLevel: config.thinkingLevel === '' ? null : config.thinkingLevel,
         timeoutMs: config.timeoutMs,
         modelTimeoutMs: Math.min(config.modelTimeoutMs, config.timeoutMs),
         maxPromptChars: config.maxPromptChars,

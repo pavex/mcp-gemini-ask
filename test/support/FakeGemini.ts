@@ -14,8 +14,8 @@ export type FakeBehavior = 'ok' | 'quota_minute' | 'quota_day' | 'gone' | 'rejec
 export interface FakeGemini {
     /** ID -> behavior; only these IDs are listed by ListModels. */
     models: Record<string, FakeBehavior>
-    /** Every generateContent call, in order. */
-    calls: { id: string, prompt: string }[]
+    /** Every generateContent call, in order, with the thinking level it carried. */
+    calls: { id: string, prompt: string, thinkingLevel?: string }[]
     /** How often ListModels was called. */
     listCalls: number
     /** Delay of ListModels answers (a slow discovery). */
@@ -69,8 +69,9 @@ async function handle(fake: FakeGemini, request: IncomingMessage, response: Serv
         body += chunk
     }
     const id = match[1]
-    const prompt = JSON.parse(body).contents[0].parts[0].text as string
-    fake.calls.push({ id, prompt })
+    const sent = JSON.parse(body)
+    const prompt = sent.contents[0].parts[0].text as string
+    fake.calls.push({ id, prompt, thinkingLevel: sent.generationConfig?.thinkingConfig?.thinkingLevel })
 
     switch (fake.models[id]) {
         case 'ok':

@@ -51,6 +51,8 @@ The model list is kept in `<dataDir>/models.json` together with each model's sta
 
 **Time limits:** one `ask_gemini` call ends within `timeoutMs` (default 25 s, below the 30 s request timeout common in MCP clients and gateways). One model gets at most `modelTimeoutMs` (default 20 s) of it. The limit covers the whole answer, so a model that sends headers and then stalls is cut off too. With fewer than 3 s left, no further model is started.
 
+**Thinking:** Gemini 3 and newer think before they answer; `thinkingLevel` sets how much (`generationConfig.thinkingConfig.thinkingLevel`). A lower level answers faster and spends fewer tokens: a short prompt took 0.5–1 s with `low` or `minimal` against 3–6 s with the default. Not every model takes every level (Pro models refuse `minimal`); a model that refuses gets HTTP 400 and is dropped at discovery or skipped in a call, so pick a level the models in `includeModels` accept.
+
 **Log** (stderr; stdout carries the MCP protocol):
 
 ```
@@ -81,6 +83,7 @@ The path is absolute or relative to the working directory. Without it, `config.j
   "excludeModels": "image|tts|audio|live|computer-use|robotics|embedding",
   "deprioritizeModels": "",
   "modelsTtlHours": 24,
+  "thinkingLevel": "",
   "timeoutMs": 25000,
   "modelTimeoutMs": 20000,
   "maxPromptChars": 200000
@@ -96,6 +99,7 @@ The path is absolute or relative to the working directory. Without it, `config.j
 | `excludeModels` | `image\|tts\|audio\|live\|computer-use\|robotics\|embedding` | Regex; matching models are never discovered |
 | `deprioritizeModels` | `""` | Regex; matching models are tried last |
 | `modelsTtlHours` | `24` | How old the discovered list may get before it is refreshed |
+| `thinkingLevel` | `""` | How much Gemini 3+ models think: `minimal`, `low`, `medium`, `high`; `""` = the model's own default. Older models (2.5) and IDs without a version get none. |
 | `timeoutMs` | `25000` | Time limit of a whole `ask_gemini` call, fallbacks included |
 | `modelTimeoutMs` | `20000` | Time limit of one model (at most `timeoutMs`) |
 | `maxPromptChars` | `200000` | Max prompt length |

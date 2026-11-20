@@ -1,3 +1,6 @@
+import type { ThinkingLevel } from '../../lib/gemini'
+
+
 /** The validated config (loadConfig()): environment variables filled in, paths absolute, patterns compiled. */
 export interface GeminiAskConfig {
     apiKey: string
@@ -11,6 +14,8 @@ export interface GeminiAskConfig {
     /** Matching models are tried last. */
     deprioritizeModels: RegExp | null
     modelsTtlMs: number
+    /** For Gemini 3 and newer; null = the model's own default. */
+    thinkingLevel: ThinkingLevel | null
     /** Time limit of a whole ask_gemini call, fallbacks included. */
     timeoutMs: number
     /** Time limit of one model, at most timeoutMs. */

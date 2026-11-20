@@ -1,32 +1,39 @@
 import type { GeminiApiOptions } from './interfaces/GeminiApiOptions'
+import { modelVersion } from './ModelVersion'
 import { GenerateKind } from './types/GenerateKind'
 import type { GenerateResult } from './types/GenerateResult'
 import { QuotaPeriod } from './types/QuotaPeriod'
+import type { ThinkingLevel } from './types/ThinkingLevel'
 
 
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/'
 const DEFAULT_TIMEOUT_MS = 20_000
 // ListModels is metadata only and quick; its limit does not follow generate's.
 const LIST_TIMEOUT_MS = 30_000
+// thinkingLevel exists since Gemini 3; 2.5 knows only thinkingBudget and rejects it.
+const THINKING_LEVEL_SINCE = 3
 const DEFAULT_RETRY_AFTER_SEC = 60
 
 
 // Plain REST over fetch, no SDK. The time limit covers the whole exchange,
 // body included: a model may send its headers and then never finish the
 // answer. generate() never throws - every outcome is a GenerateResult, so the
-// caller decides what a quota, a 404 or a timeout means for it.
+// caller decides what a quota, a 404 or a timeout means for it. A thinking
+// level goes only to models whose ID says version 3 or newer.
 /** The Gemini REST API: the list of models and one generateContent call. */
 export class GeminiApi {
 
     private apiKey: string
     private baseUrl: string
     private timeoutMs: number
+    private thinkingLevel: ThinkingLevel | null
 
 
     constructor(options: GeminiApiOptions) {
         this.apiKey = options.apiKey
         this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/?$/, '/')
         this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+        this.thinkingLevel = options.thinkingLevel ?? null
     }
 
 
@@ -69,7 +76,7 @@ export class GeminiApi {
             response = await this.request(`${this.baseUrl}models/${modelId}:generateContent`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+                body: JSON.stringify(this.requestBody(modelId, prompt))
             }, timeoutMs)
         }
         catch (error) {
@@ -95,6 +102,16 @@ export class GeminiApi {
             return { kind: GenerateKind.Unavailable, status, message: errorMessage(response) }
         }
         return answerOf(response.body as GenerateBody | null)
+    }
+
+
+    // The prompt, and the thinking level for a model that knows it.
+    private requestBody(modelId: string, prompt: string): object {
+        const body: Record<string, unknown> = { contents: [{ role: 'user', parts: [{ text: prompt }] }] }
+        if (this.thinkingLevel && (modelVersion(modelId) ?? 0) >= THINKING_LEVEL_SINCE) {
+            body.generationConfig = { thinkingConfig: { thinkingLevel: this.thinkingLevel } }
+        }
+        return body
     }
 
 

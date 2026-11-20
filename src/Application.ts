@@ -48,5 +48,6 @@ export class Application {
         logger.write(list.fixed
             ? `Models: fixed list from config (${config.models.join(', ')}), discovery off`
             : `Models: discovered, include ${config.includeModels?.source ?? 'all'}, ${list.size} stored`)
+        logger.write(`Thinking level: ${config.thinkingLevel ?? 'model default'} (Gemini 3 and newer)`)
     }
 }

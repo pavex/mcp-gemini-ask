@@ -10,7 +10,7 @@ The public API is `index.ts`: `import { GeminiApi, GeminiModelList } from './lib
 
 ### `GeminiApi`
 
-`new GeminiApi({ apiKey, baseUrl?, timeoutMs? })`, where `timeoutMs` (default 20 s) is the limit of a `generate()` call that gives none.
+`new GeminiApi({ apiKey, baseUrl?, timeoutMs?, thinkingLevel? })`, where `timeoutMs` (default 20 s) is the limit of a `generate()` call that gives none, and `thinkingLevel` (`ThinkingLevel.Minimal` / `Low` / `Medium` / `High`, default none: the model's own) goes as `generationConfig.thinkingConfig.thinkingLevel` to models whose ID says version 3 or newer only (`modelVersion(id)`), since 2.5 rejects it.
 
 - `listModelIds(timeoutMs = 30 s): Promise<string[]>`: IDs of the models that support generateContent, without `models/`. Throws when the list can't be read (e.g. a wrong key: `ListModels HTTP 400 - API key not valid`).
 - `generate(modelId, prompt, timeoutMs?): Promise<GenerateResult>`: one prompt to one model. Never throws; the result has a `kind` (`GenerateKind`):
@@ -51,7 +51,7 @@ The public API is `index.ts`: `import { GeminiApi, GeminiModelList } from './lib
 - `record(id, result)`: turns a `generate()` outcome into the model's state: `Ok`, quota until its time, `Timeout` → paused, `Gone`/`NoAccess` → unusable until the next refresh, anything else one more failure.
 - `state(id): ModelState`, `save()`, `fixed`, `size`, `isStale()`, `refreshAgeMs()`, `isCandidate(id)`.
 
-`scoreModelId(id)` is the ranking alone: newer version, then pro > flash > flash-lite, `-preview`/`-exp` as a tie-break, IDs without a version `-Infinity`.
+`modelVersion(id)` reads the version from an ID (`gemini-3.5-flash` → 3.5, `gemini-flash-latest` → null). `scoreModelId(id)` is the ranking alone: newer version, then pro > flash > flash-lite, `-preview`/`-exp` as a tie-break, IDs without a version `-Infinity`.
 
 ## Example
 

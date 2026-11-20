@@ -1,6 +1,6 @@
 {
   "name": "mcp-gemini-ask",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "MCP server - ask Google Gemini, with a self-managed model list and fallback",
   "private": true,
   "type": "module",

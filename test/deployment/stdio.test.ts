@@ -30,7 +30,7 @@ test('handshake in 2025-11-25 and 2025-06-18; exactly one tool, ask_gemini(promp
         const server = start()
         const answer = await server.initialize(version)
         assert.equal(answer.result?.protocolVersion, version)
-        assert.deepEqual(answer.result?.serverInfo, { name: 'mcp-gemini-ask', version: '3.0.0' })
+        assert.deepEqual(answer.result?.serverInfo, { name: 'mcp-gemini-ask', version: '3.1.0' })
         const tools = (await server.call('tools/list')).result?.tools
         assert.deepEqual(tools.map((tool: { name: string }) => tool.name), ['ask_gemini'])
         assert.deepEqual(tools[0].inputSchema.required, ['prompt'])
@@ -52,7 +52,8 @@ test('an answer end to end; data next to the config, the log on stderr, stdout o
 
     const stored = JSON.parse(readFileSync(join(folder, 'state', 'models.json'), 'utf8'))
     assert.deepEqual(stored.models.map((model: { id: string }) => model.id), ['gemini-3-flash', 'gemini-2.5-flash'])
-    assert.match(server.stderr(), /mcp-gemini-ask 3\.0\.0 started/)
+    assert.match(server.stderr(), /mcp-gemini-ask 3\.1\.0 started/)
+    assert.match(server.stderr(), /Thinking level: model default \(Gemini 3 and newer\)/)
     assert.match(server.stderr(), /probe gemini-3-flash: ok/)
     assert.match(server.stderr(), /Model list: 2 usable of 2 candidates \(3 in catalog\)/)
     assert.match(server.stderr(), /gemini-3-flash: OK/)

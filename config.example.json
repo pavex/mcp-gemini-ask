@@ -6,6 +6,7 @@
   "excludeModels": "image|tts|audio|live|computer-use|robotics|embedding",
   "deprioritizeModels": "",
   "modelsTtlHours": 24,
+  "thinkingLevel": "",
   "timeoutMs": 25000,
   "modelTimeoutMs": 20000,
   "maxPromptChars": 200000

@@ -2,7 +2,7 @@
 export const SERVER_NAME = 'mcp-gemini-ask'
 
 /** Version of the server in initialize. */
-export const SERVER_VERSION = '3.0.0'
+export const SERVER_VERSION = '3.1.0'
 
 /** The file in dataDir that keeps the model list and the models' states. */
 export const MODELS_FILE = 'models.json'

@@ -21,6 +21,7 @@ test('defaults, with the key from GEMINI_API_KEY', () => {
     assert.ok(config.excludeModels?.test('gemini-3-pro-image'))
     assert.equal(config.deprioritizeModels, null)
     assert.equal(config.modelsTtlMs, 24 * 3_600_000)
+    assert.equal(config.thinkingLevel, null)
     assert.deepEqual([config.timeoutMs, config.modelTimeoutMs, config.maxPromptChars], [25_000, 20_000, 200_000])
     assert.match(config.baseUrl, /^https:\/\/generativelanguage\.googleapis\.com\//)
 })
@@ -40,6 +41,8 @@ test('errors name the key', () => {
     assert.throws(() => parseConfig({ apiKey: 'k', modelsTtlHours: -1 }, {}, BASE), /modelsTtlHours/)
     assert.throws(() => parseConfig({ apiKey: 'k', excludeModels: '(' }, {}, BASE), /excludeModels/)
     assert.throws(() => parseConfig([], {}, BASE), /JSON object/)
+    assert.throws(() => parseConfig({ apiKey: 'k', thinkingLevel: 'extreme' }, {}, BASE), /thinkingLevel/)
+    assert.equal(parseConfig({ apiKey: 'k', thinkingLevel: 'low' }, {}, BASE).thinkingLevel, 'low')
 })
 
 

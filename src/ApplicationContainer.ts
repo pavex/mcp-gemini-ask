@@ -33,7 +33,12 @@ export class ApplicationContainer {
 
 
     getGeminiApi(): GeminiApi {
-        return this.api ??= new GeminiApi({ apiKey: this.config.apiKey, baseUrl: this.config.baseUrl, timeoutMs: this.config.modelTimeoutMs })
+        return this.api ??= new GeminiApi({
+            apiKey: this.config.apiKey,
+            baseUrl: this.config.baseUrl,
+            timeoutMs: this.config.modelTimeoutMs,
+            thinkingLevel: this.config.thinkingLevel
+        })
     }
 
 
