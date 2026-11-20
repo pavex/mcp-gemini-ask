@@ -5,8 +5,9 @@ import { test } from 'node:test'
 
 
 // Guards the layout that a wrong import would break silently: lib/ knows
-// nothing of the server, only the application talks MCP, and the build
-// makes only dist/ from src/main.ts. Reads the files, runs nothing.
+// nothing of the server, only the application and the Tool base talk MCP,
+// every tool is a Tool class, and the build makes only dist/ from
+// src/main.ts. Reads the files, runs nothing.
 
 const ROOT = resolve(import.meta.dirname, '..')
 const SRC = join(ROOT, 'src')
@@ -28,11 +29,23 @@ test('the server uses lib/gemini through its index only', () => {
 })
 
 
-test('only Application.ts and tools/ know the MCP SDK; lib/ has no packages but node:', () => {
+test('only Application.ts and tools/Tool.ts know the MCP SDK; lib/ has no packages but node:', () => {
     const sdk = sources().filter(file => /from '@modelcontextprotocol\//.test(read(file))).map(toPosix).sort()
-    assert.deepEqual(sdk, ['Application.ts', 'tools/AskGeminiTool.ts'])
+    assert.deepEqual(sdk, ['Application.ts', 'tools/Tool.ts'])
     const packages = sources().filter(file => toPosix(file).startsWith('lib/') && /from '(?!\.|node:)/.test(read(file)))
     assert.deepEqual(packages, [])
+})
+
+
+// The tool files directly in tools/; the parts of Tool (tools/Tool/) are not tools.
+test('every tool is a class extending Tool, with no functions outside the class', () => {
+    const tools = sources().map(toPosix).filter(file => /^tools\/\w+\.ts$/.test(file) && file !== 'tools/Tool.ts')
+    assert.ok(tools.length > 0)
+    for (const file of tools) {
+        const text = read(file)
+        assert.match(text, /export class \w+Tool extends Tool</, file)
+        assert.doesNotMatch(text, /^(export )?(async )?function /m, file)
+    }
 })
 
 

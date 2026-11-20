@@ -136,7 +136,7 @@ The tests are TypeScript and run from `test/` directly (`test/support/register.m
 - `test/lib/gemini/`: the package (API outcomes, states, ranking, the list with discovery, storage, TTL and a fixed list);
 - `test/config/`, `test/ask/`: the config and the fallback with its messages and time limits, without a process;
 - `test/deployment/`: the built `dist/mcp.js` as a process over stdio, with a config file;
-- `test/structure.test.ts`: the import boundaries and the build.
+- `test/structure.test.ts`: the import boundaries, the tool classes and the build.
 
 Code style: 4-space indent, no semicolons, `else` on a new line, one class per file with its parts in a folder of its name, `interfaces/` and `types/` folders, enums instead of string unions. `npm run style` applies the mechanical part.
 
@@ -154,6 +154,7 @@ src/
   log/Logger.ts                   log lines to stderr
   ask/GeminiAsk.ts                one question: fallback across models, time limits
   ask/GeminiAsk/FailureMessage.ts the message to the agent when no model answered
+  tools/Tool.ts                   base of a tool: registration, answer, errors (ToolError = text for the agent)
   tools/AskGeminiTool.ts          the ask_gemini tool
   lib/gemini/                     the package: GeminiApi, GeminiModelList (see its README)
 test/                             as above

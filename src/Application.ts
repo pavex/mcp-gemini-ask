@@ -3,7 +3,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { ApplicationContainer } from './ApplicationContainer'
 import { loadConfig } from './config/Config'
 import { SERVER_NAME, SERVER_VERSION } from './Consts'
-import { registerAskGemini } from './tools/AskGeminiTool'
+import { AskGeminiTool } from './tools/AskGeminiTool'
 
 
 // Boot reads the config and the stored model list synchronously, then
@@ -34,7 +34,7 @@ export class Application {
     /** A new MCP server with the ask_gemini tool. */
     createServer(): McpServer {
         const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION })
-        registerAskGemini(server, this.container.getGeminiAsk(), this.container.getConfig().maxPromptChars)
+        new AskGeminiTool(this.container.getGeminiAsk(), this.container.getLogger(), this.container.getConfig().maxPromptChars).register(server)
         return server
     }
 
