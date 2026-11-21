@@ -1,4 +1,4 @@
-# mcp-gemini-ask
+# mcp-gemini-ask — Ask Google Gemini from any MCP client
 
 An MCP server with one tool, `ask_gemini(prompt)`: it sends the prompt to Google Gemini and returns the answer as text.
 
